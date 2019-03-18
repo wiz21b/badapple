@@ -167,6 +167,7 @@ DRAW_STATUS = 0
 LZ	= 1
 NOCOMP	= 0
 compression = LZ		; LZ or NOCOMP
+TOTAL_FRAMES	= 2190		; Number of frames in the movie
 
 GETLNZ 		= $FD67
 GETLNZ_PROMPT 	= $33
@@ -174,6 +175,15 @@ COUT     	= $FDED	; The Apple II character output func.
 GR_RAM	 	= $400
 MLI		= $BF00
 SPKR		= $C030
+MOTOR_ON	= $C089
+DRV_SLCT	= $C08B
+
+DRIVE_SELECT	= $80		; 0 == drive 1; $80 = drive 2
+SLOT_SELECT	= $60 ; 0 (drive 1) 110 (slot 6) 0000
+
+TRACKS_PER_SIDE		= 35
+BYTES_PER_SECTOR 	= 256
+SECTORS_PER_TRACK 	= 16
 
 
 ; Zero page locations
@@ -219,8 +229,7 @@ slotz            =        wtemp + 4
 yend             =        wtemp+5
 unitnum          =        $43
 buf              =        $44
-DRIVE_SELECT	= $80		; 0 == drive 1; $80 = drive 2
-SLOT_SELECT	= $60 ; 0 (drive 1) 110 (slot 6) 0000
+
 
 
 	*= $0C00
@@ -247,7 +256,7 @@ track_seek_countdown !byte track_seek_countdown_value
 
 
 main_start:
-	+store_16 lo_hi_bits_reverse_ptr, lo_hi_bits_reverse
+	;; +store_16 lo_hi_bits_reverse_ptr, lo_hi_bits_reverse
 
 zorglub:
 	;; jsr load_current_stripe
@@ -290,8 +299,6 @@ zorglub:
 
 ;  ----------------------------------------------------------------------------
 
-BYTES_PER_SECTOR = 256
-SECTORS_PER_TRACK = 16
 TRACK_DATA_BANK = disk_buffers_base >> 8
 TRACK_DATA_BANK_OUT = (disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR) >> 8
 
@@ -625,18 +632,9 @@ draw_status0:
 }
 
 ; ----------------------------------------------------------------------------
-;processed_bufferg	!byte 0	; Number of the processed buffer (relative to curren track buffer)
-processed_buffer_hibyte	!byte 0 ; hi byte of a pointer to the currently processed buffer
-
-stripes_to_process	!byte 0
-
-stripes_per_run	= 25
-
 
 ; -----------------------------------------------------------------------------
 
-STRIPES_PER_SECTOR = 128
-TOTAL_FRAMES	= 2190
 
 ;; end_picture_reached  !byte 0
 
@@ -705,7 +703,6 @@ process_a_frame_loop:
 
 
 ; ----------------------------------------------------------------------------
-TRACKS_PER_SIDE	= 35
 advance_drive_latch:
 	LDA curtrk
 	CMP #((TRACKS_PER_SIDE-1)*2)	; Are we on the last track
@@ -718,16 +715,6 @@ advance_drive_latch:
 .disk_end:
 	CLC
 	RTS
-; ----------------------------------------------------------------------------
-
-
-read_half_track  	!byte 0
-processed_half_track  	!byte 8
-
-halftracks		= *
-halftrack0		!fill 8,0
-halftrack1		!fill 8,0
-
 
 ; ----------------------------------------------------------------------------
 
@@ -982,69 +969,69 @@ expand_transparent_tile:
 
 line_count !byte 0
 
-dummy_data:
-	!fill 512,$39
+;; dummy_data:
+;; 	!fill 512,$39
 
-show_frame:
+;; show_frame:
 
-	lda #<dummy_data
-	sta tile_pointer
-	lda #>dummy_data
-	sta tile_pointer+1
+;; 	lda #<dummy_data
+;; 	sta tile_pointer
+;; 	lda #>dummy_data
+;; 	sta tile_pointer+1
 
 
-	; There will be 40x48/4 = 480 tiles => I need more than a register to iterate over them.
-	; Or I can work with rows of tiles.
+;; 	; There will be 40x48/4 = 480 tiles => I need more than a register to iterate over them.
+;; 	; Or I can work with rows of tiles.
 
-	+store_16 screen_pointer, GR_RAM
+;; 	+store_16 screen_pointer, GR_RAM
 
-	; screen_pointer_plus_one := screen_pointer + 1
+;; 	; screen_pointer_plus_one := screen_pointer + 1
 
-	clc
-	lda screen_pointer
-	adc #1
-	sta screen_pointer_plus_one
-	lda screen_pointer + 1
-	adc #0
-	sta screen_pointer_plus_one + 1
+;; 	clc
+;; 	lda screen_pointer
+;; 	adc #1
+;; 	sta screen_pointer_plus_one
+;; 	lda screen_pointer + 1
+;; 	adc #0
+;; 	sta screen_pointer_plus_one + 1
 
-iterations  = 16
+;; iterations  = 16
 
-	lda #(512/iterations)
-	sta line_count
+;; 	lda #(512/iterations)
+;; 	sta line_count
 
-.show_frame_line_loop:
-	!for tile_ndx, iterations {
-	!zone {
-	ldy #(tile_ndx-1)
-	lda (tile_pointer),y
+;; .show_frame_line_loop:
+;; 	!for tile_ndx, iterations {
+;; 	!zone {
+;; 	ldy #(tile_ndx-1)
+;; 	lda (tile_pointer),y
 
-	; The tile number is coded on the 7th lo bits.
-	ASL										; 2 c
-	CMP #($7E*2)	      	   							; 2 c
-	BEQ .next_tile							; 2+ c
+;; 	; The tile number is coded on the 7th lo bits.
+;; 	ASL										; 2 c
+;; 	CMP #($7E*2)	      	   							; 2 c
+;; 	BEQ .next_tile							; 2+ c
 
-	TAX   	       									; 2 c
+;; 	TAX   	       									; 2 c
 
-	LDY #((tile_ndx-1)*2)
-	LDA tiles,X									; 5+ c
-	STA (screen_pointer),Y								; 6
-	LDA tiles+1,X									; 5+
-	STA (screen_pointer_plus_one),Y								; 6
-.next_tile
-	}}
+;; 	LDY #((tile_ndx-1)*2)
+;; 	LDA tiles,X									; 5+ c
+;; 	STA (screen_pointer),Y								; 6
+;; 	LDA tiles+1,X									; 5+
+;; 	STA (screen_pointer_plus_one),Y								; 6
+;; .next_tile
+;; 	}}
 
-	dec line_count
-	beq show_frame_finish
+;; 	dec line_count
+;; 	beq show_frame_finish
 
-	+add_const_to_16 tile_pointer, iterations	; screen is 40*48 => 1960 pixles =>  980 bytes, but there are gaps : 1024 bytes. Tiles code 4 pixles per byte => 512 bytes
-	+add_const_to_16 screen_pointer, iterations*2
-	+add_const_to_16 screen_pointer_plus_one, iterations*2
+;; 	+add_const_to_16 tile_pointer, iterations	; screen is 40*48 => 1960 pixles =>  980 bytes, but there are gaps : 1024 bytes. Tiles code 4 pixles per byte => 512 bytes
+;; 	+add_const_to_16 screen_pointer, iterations*2
+;; 	+add_const_to_16 screen_pointer_plus_one, iterations*2
 
-	jmp .show_frame_line_loop
+;; 	jmp .show_frame_line_loop
 
-show_frame_finish:
-	RTS										; 6 => tile expand = 17 cycles
+;; show_frame_finish:
+;; 	RTS										; 6 => tile expand = 17 cycles
 
 
 
@@ -1131,7 +1118,7 @@ sector_zero:
 	; Restart the motor
 
 	ldx #SLOT_SELECT
-	LDA $C089, X
+	LDA MOTOR_ON, X
 
 	ldx #SLOT_SELECT
 	jsr rdadr16
@@ -1191,9 +1178,9 @@ init_disk_read:
 
 	ldx #SLOT_SELECT
 !if DRIVE_SELECT = $80 {
-	LDA $C08B, X
+	LDA DRV_SLCT, X
 }
-	LDA $C089, X
+	LDA MOTOR_ON, X
 
 	RTS
 
@@ -2206,10 +2193,10 @@ copy_compressed:
 	}
 	rts
 
-lo_hi_bits_reverse:
-	!for i, 256 {
-	!byte (((i-1) << 4) & $F0) + (((i-1) >> 4) & $0F)
-	}
+;; lo_hi_bits_reverse:
+;; 	!for i, 256 {
+;; 	!byte (((i-1) << 4) & $F0) + (((i-1) >> 4) & $0F)
+;; 	}
 
 	!src "data.a"
 

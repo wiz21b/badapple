@@ -1241,16 +1241,16 @@ def simple_huffman( unique_stripes, all_stripes):
         sid = s.stripe_id2 - 1
 
         if sid < d1:
-            # 0xxxb
+            # 0xxxb => 8 values
             bits = bitstring.BitArray(length=4, uint=sid)
         elif d1 <= sid < d2:
-            # 10yy yyyy
+            # 10yy yyyy => 64 values
             bits = bitstring.BitArray(length=8, uint=0b10000000 + sid - d1)
         elif d2 <= sid < d3:
-            # 110z zzzz zzzz 12 bits, 9 significant
+            # 110z zzzz zzzz 12 bits, 9 significant => 512 values
             bits = bitstring.BitArray(length=12, uint=0b110000000000 + sid - d2)
         elif d3 <= sid < 2 ** 13:
-            # 111z zzzz zzzz zzzz 16 bits, 13 significant
+            # 111z zzzz zzzz zzzz 16 bits, 13 significant => 8192 values
             bits = bitstring.BitArray(length=16, uint=0b1110000000000000 + sid - d3)
         else:
             raise Exception("argh {}".format( sid))
@@ -1265,6 +1265,7 @@ def simple_huffman( unique_stripes, all_stripes):
 
     b = stream.tobytes()
 
+    # Allow some wrapping so that the ASM code is simpler
     extra_bytes = 3
 
 
