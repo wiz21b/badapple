@@ -173,13 +173,15 @@ GETLNZ 		= $FD67
 GETLNZ_PROMPT 	= $33
 COUT     	= $FDED	; The Apple II character output func.
 GR_RAM	 	= $400
+GR2_RAM	 	= $800
 MLI		= $BF00
 SPKR		= $C030
 MOTOR_ON	= $C089
 DRV_SLCT	= $C08B
+LC_RAM_SELECT	= $C08B
 
-DRIVE_SELECT	= $80		; 0 == drive 1; $80 = drive 2
-SLOT_SELECT	= $60 ; 0 (drive 1) 110 (slot 6) 0000
+DRIVE_SELECT	= $80	; 0 == drive 1; $80 = drive 2
+SLOT_SELECT	= $60	; 0 (drive 1) 110 (slot 6) 0000
 
 TRACKS_PER_SIDE		= 35
 BYTES_PER_SECTOR 	= 256
@@ -215,9 +217,7 @@ dummy_ptr		= 254
 
 ; Other constants
 
-IMAGES=69 ; Nb frames to display
-IMG_BYTE_LINES=24 ; actual height >> 1
-disk_buffers_base	= $9F00	; use $A000 and $B000 banks (just below $C000)
+disk_buffers_base	= $DF00	; you'll need 64kb RAM to do that (language card!)
 
 ; Prodos stuff
 
@@ -234,12 +234,14 @@ buf              =        $44
 
 	*= $0C00
 
+
+
 	JMP main_start
 
 prodos_params:
 	!byte 3	; 3 parameters
 	!byte SLOT_SELECT + DRIVE_SELECT
-	!word $0800 ; Memory buffer, make sure it's not in ProDos's stuff ($9000 is such an area)
+	!word GR2_RAM ; Memory buffer, make sure it's not in ProDos's stuff
 block_read	!word $0001 ; Block to read
 
 next_track_trigger	!byte 64
@@ -292,6 +294,8 @@ zorglub:
 	JSR init_disk_read
 	JSR sector_zero
 
+
+
 	+store_16 screen_pointer, GR_RAM
 
 	jmp main_control
@@ -310,6 +314,9 @@ sectors_to_read	   !byte SECTORS_PER_TRACK
 
 
 main_control:
+	LDA LC_RAM_SELECT
+	LDA LC_RAM_SELECT
+
 	jsr copy_compressed
 
 
