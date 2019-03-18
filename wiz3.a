@@ -1,0 +1,2241 @@
+; Compile with :
+; acme wiz.a
+; dskalyzer.exe -with-disk BAD_APPLE.DSK -file-put wiz3#0x0C00.o
+; wine-development ~/.wine/drive_c/Program\ Files\ \(x86\)/faddenSoft/CiderPress/CiderPress.exe
+; mame apple2p -skip_gameinfo -window -nomax -flop1 NEW.DSK -flop2 cstripes.dsk
+; c:\port-stc\opt\mame\mame64 apple2p -skip_gameinfo -window -nomax -flop1 NEW.DSK -flop2 cstripes.dsk -rp bios
+
+; mame apple2p  -skip_gameinfo -window -nomax -flop1 NEW.DSK -flop2 cstripes.dsk -aviwrite z.avi
+;  ffmpeg -i ~/.mame/snap/z.avi -vf "scale=iw*.5:ih,format=gray" o.avi
+
+;; java -jar ~/Downloads/AppleCommander-1.3.5.13-ac.jar -d NEW.DSK STARTUP
+;; java -jar ~/Downloads/AppleCommander-1.3.5.13-ac.jar -p NEW.DSK STARTUP BIN 0x0C00 < STARTUP
+
+
+; 1 side x 35 Tracks/side x 16 Sectors/Trk x 256 Bytes/Sec = 143,360 Bytes.
+; 2200 pictures => 2200/35=62 frames per track
+
+
+	!cpu 6502
+	!sl "listing.txt"
+	!to "STARTUP",plain
+
+ 	;; !to "STARTUP#060C00",plain		; The stuff at '#' is for CiderPress to
+       	;;    				; set up file attributes : 06=BIN file,
+	;; 				; 0C00 = load address in RAM
+
+;       to "wiz3#0x0C00.o",plain		; The stuff at '#' is for Diskalayzer to
+;       	   				; set up file attributes : 06=BIN file,
+;					; 0C00 = load address in RAM
+
+
+
+; My goal is to use the Apple Drive as a timer.  It produces a « tick
+; » each time a sector is read. Reading a sector is 0.  Drive is 300
+; RPM, so 5 RPS, since there are 16 sectors per track, that’s 80
+; sectors per second => 1 sector = 0.0125 second = 12500 cycles. So a tick every
+; 0.0125 second.
+
+; Since reading sectors and processing data must be interleaved and
+; data processing is hard to estimate, I’ll track the number of sector
+; « passed by » from time to time (instead of trying to « race » the
+; disk on each sectors). This can be done using rdaddr16 which
+; indicates the number of the sector it finds.
+
+; Every 0.1 second, I need to display a frame of the
+; video. Interestingly, 0.1 = 0.0125 (sector tick) * 8 => I need to
+; display a frame of the video every 8 sectors.  Also, everytime I
+; have read 16 sectors, I must advance one track. This action takes «
+; some » time.
+
+; I store at least one frame per sector. So I can read up to 8
+; sectors while I display one frame.
+
+; The problem is when there's one sector left to be read
+; on a track. In that case, the worst case scenario is to pass
+; 16-1=15 sectors before reaching the one we're interested in.
+; If, for example, I do nothing while waiting, then that
+; time is wasted. So the whole idea is to wait in a active maner.
+; The best way to do that is to process some data and poll the
+; drive from time to time to know if I'm close or not a sector
+; I have to read. If I'm close, then I wait. If I'm far, then
+; I process some more data an poll the drive later on.
+
+; The difficulty of course is to estimate the time it takes
+; to "process some data". I'll use heuristics in a first
+; approach. I could count the cycles but that's very tricky.
+
+; Read sector address
+; how far is the next sector that must be read ?
+; More than 2 sectors away : process some data.
+; Less than 2 sectors away : wait for that sector, then read it.
+; If sector_passed MOD 8 == 7 : time to show a frame.
+; If all sectors are read, advance track.
+; Process data = decompress stripes up to 4 frames ahead (1 frame in tiles = 40*48/4 = 480 tiles = 480 bytes); I decrunch one sector at a time
+
+; Decrunching a frame takes 30000 cycles so far, reading a sectors
+; takes +/- 12500 cycles => decrunching a full frames takes around 3
+; sectors.
+
+; Untiling and copying frames takes, say, 25000 cycles
+
+; Imagine we work on a sector basis (harder because huffman encodes
+; stuff that can be on both sides of sector boundaries)
+
+; halfTrack = 8 sectors
+; halfTrack[i] == 0 : to read, 2 : to process, 1 : processed
+; when sum(halfTrack) >= 1* len(halfTrack) : start reading sector on another halfTrack (if other halfTrack is ready to read)
+; when sum(halfTrack) == 2* len(halfTrack) : mark this half track ready to read (reset statuses to 0).
+
+; processed_half_track; read_halftrack
+
+
+
+!macro add_a_to_16 .target {
+        ; Add A to .target
+	; A is destroyed
+        CLC			; 2 c
+	ADC .target		; 3 zp or 4 absolute
+	STA .target		; 3 zp or 4 absolute
+	LDA #0			; 2
+	ADC .target + 1		; 3 or 4
+	STA .target + 1		; 3 or 4 => 16 or 20 cycles
+}
+
+
+; increase 16-bit counters
+; no register touched
+!macro inc16 .target {
+	inc .target					; 5+
+	bne .j	; "bne * + 5" would not work in zp	; 2+
+	inc .target + 1	      	    	     		; 5+ => total 12 or 15 cycles
+.j
+}
+
+; decrease 16-bit counters
+; A destroyed
+!macro dec16 .target {
+	LDA .target
+	BNE .j	; "bne * + 5" would not work in zp
+	DEC .target + 1
+.j
+	DEC .target	; low byte
+}
+
+
+!macro store_16 .target, .const {
+	lda #<.const
+	sta .target
+	lda #>.const
+	sta .target + 1
+}
+
+
+; 16 bit word := 16 bit word - 16 bit const
+!macro sub_const_from_16 .target, .const {
+	SEC
+	LDA .target
+	SBC #<.const
+	STA .target
+	LDA .target + 1
+	SBC #>.const
+	STA .target + 1
+}
+
+; 16 bit word := 16 bit word + 16 bit const
+!macro add_const_to_16 .target, .const {
+	CLC
+	LDA .target     ; low byte
+	ADC #<.const
+	STA .target
+
+	LDA .target+1	; high byte
+	ADC #>.const
+	STA .target+1
+}
+
+
+!macro	writeln .msg {
+	LDA #(< .msg)
+       	STA println_self_mod + 1
+       	LDA #(> .msg)
+       	STA println_self_mod + 2
+	JSR println
+}
+
+DRAW_STATUS = 0
+LZ	= 1
+NOCOMP	= 0
+compression = LZ		; LZ or NOCOMP
+
+GETLNZ 		= $FD67
+GETLNZ_PROMPT 	= $33
+COUT     	= $FDED	; The Apple II character output func.
+GR_RAM	 	= $400
+MLI		= $BF00
+SPKR		= $C030
+
+
+; Zero page locations
+; -------------------
+
+pointer		    	= 224
+pointer2		= 226
+lo_hi_bits_reverse_ptr	= 226
+stripe_ptr		= 228
+tile_pointer		= 230
+stripe_index		= 232
+count1			= 234
+count2			= 235
+remaining_bytes_on_line = 236
+command_byte		= 238
+line_split		= 239
+expand_pixels_table1_ptr = 240
+expand_pixels_table2_ptr = 242
+rle_pointer	 	 = 244
+
+screen_pointer	 	 = 246
+
+cmd_pointer	 	 = 248
+screen_line_ptr 	 = 250
+
+screen_pointer_plus_one  = 252
+filler_ptr		 = 252
+dummy_ptr		= 254
+
+; Other constants
+
+IMAGES=69 ; Nb frames to display
+IMG_BYTE_LINES=24 ; actual height >> 1
+disk_buffers_base	= $9F00	; use $A000 and $B000 banks (just below $C000)
+
+; Prodos stuff
+
+wtemp            =        $3a
+midnib1          =        wtemp+1
+midnib2          =        wtemp+2
+lstnib           =        wtemp+3
+slotz            =        wtemp + 4
+yend             =        wtemp+5
+unitnum          =        $43
+buf              =        $44
+DRIVE_SELECT	= $80		; 0 == drive 1; $80 = drive 2
+SLOT_SELECT	= $60 ; 0 (drive 1) 110 (slot 6) 0000
+
+
+	*= $0C00
+
+	JMP main_start
+
+prodos_params:
+	!byte 3	; 3 parameters
+	!byte SLOT_SELECT + DRIVE_SELECT
+	!word $0800 ; Memory buffer, make sure it's not in ProDos's stuff ($9000 is such an area)
+block_read	!word $0001 ; Block to read
+
+next_track_trigger	!byte 64
+next_read_sector	!byte 32
+current_sector !byte 0
+stripe_n       !byte 0
+
+track_seek_countdown_value	= 10
+track_seek_countdown !byte track_seek_countdown_value
+
+; ####################################################################
+; ### MAIN START
+; ####################################################################
+
+
+main_start:
+	+store_16 lo_hi_bits_reverse_ptr, lo_hi_bits_reverse
+
+zorglub:
+	;; jsr load_current_stripe
+
+;; 	jsr read_bits
+;; 	clc
+;; 	inc debug
+;; 	lda #$EE
+;; 	cmp debug
+;; 	bne zorglub
+;; 	lda pointer
+;; 	lda pointer + 1
+;; 	rol data
+;; 	rol data + 1
+;; 	jmp zorglub
+;; debug	!byte 0
+
+
+
+	LDA #(' '+$80)
+	JSR clear_screen
+	+writeln msg
+	LDA #('>' + $80)
+	STA GETLNZ_PROMPT
+!if DRIVE_SELECT = 0 {
+	JSR GETLNZ
+}
+	JSR set_gr_mode
+
+
+	LDA #0
+	JSR clear_screen
+	JSR init_disk_read
+	JSR sector_zero
+
+	+store_16 screen_pointer, GR_RAM
+
+	jmp main_control
+
+
+;  ----------------------------------------------------------------------------
+
+BYTES_PER_SECTOR = 256
+SECTORS_PER_TRACK = 16
+TRACK_DATA_BANK = disk_buffers_base >> 8
+TRACK_DATA_BANK_OUT = (disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR) >> 8
+
+stay_on_first_track	!byte 1
+read_disk_delay !byte 0
+track_buffer	!byte 0 ; (0 or 16) Track buffer being read into
+track_status !fill SECTORS_PER_TRACK*2,0
+sectors_to_read	   !byte SECTORS_PER_TRACK
+
+
+main_control:
+	jsr copy_compressed
+
+
+.main_control_loop:
+!if DRAW_STATUS = 1 {
+	jsr draw_status
+}
+	ldx #SLOT_SELECT
+	jsr rdadr16
+	bcs .main_control_loop
+
+	;; From now on, time is ticking, we must do
+	;; as much as we can before the read latch
+	;; comes on the sector data.
+
+	; Decide what to do next
+
+	LDA sectors_passed
+	CMP #4	; Decrunching a picture takes up to 4 sectors "long". With this timeing, I reach roughly 3min 40s which is the time we look for.
+	BMI .noframe
+	SEC
+	SBC #4
+	STA sectors_passed
+
+
+	; Read a sector before drawing, else we always miss that sector
+	; because the synchronisation with the disk is very clean
+
+	jsr read_sector_if_necessary
+
+	jsr process_a_frame
+
+	jmp .main_control_loop
+
+.noframe:
+	lda sectors_to_read
+	cmp #0
+	beq .wait_processing
+
+	lda sect
+	clc
+	adc track_buffer
+	tay
+	LDA track_status,Y
+	CMP #0	; Sector is yet to be read
+	beq .read_a_sector
+	bne .main_control_loop
+
+.read_a_sector:
+	jsr read_any_sector
+	bcs .main_control_loop
+
+.wait_processing:
+
+	jsr change_track_if_necessary
+
+.unexpected_sector:
+	jmp .main_control_loop
+
+.error:
+	RTS
+
+
+
+read_unread_sector:
+	!zone {
+	ldx #SLOT_SELECT
+	jsr rdadr16
+	bcs .error
+
+read_sector_if_necessary:
+	lda sect
+	clc
+	adc track_buffer
+	tay
+
+	lda track_status, Y
+	cmp #0
+	beq read_any_sector
+	rts
+
+read_any_sector:
+
+	;; lda read_disk_delay
+	;; cmp #0
+	;; bne .success
+
+
+	; Prepare RWTS buffer
+
+	lda #0
+	sta buf
+
+	lda sect
+	clc
+	adc track_buffer
+	clc
+	adc #TRACK_DATA_BANK
+	sta buf + 1
+
+	; Read the sector
+
+	ldx #SLOT_SELECT
+	jsr read16
+	bcs .error
+
+
+	lda sect
+	clc
+	adc track_buffer
+	tay
+
+	; Defensive programming
+
+	lda track_status, Y
+	cmp #0
+	bne .error ; unexpected sector
+
+	; mark sector as read
+
+	lda #1
+	sta track_status, Y
+
+	dec sectors_to_read
+
+!if compression = LZ {
+	;;  Allow some wraping
+
+	lda sect
+	clc
+	adc track_buffer
+	cmp #0
+	bne .no_wrap
+	LDA TRACK_DATA_BANK << 8
+	STA TRACK_DATA_BANK_OUT << 8
+	LDA (TRACK_DATA_BANK << 8) + 1
+	STA (TRACK_DATA_BANK_OUT << 8) + 1
+	LDA (TRACK_DATA_BANK << 8) + 2
+	STA (TRACK_DATA_BANK_OUT << 8) + 2
+.no_wrap:
+	}
+.success:
+	CLC
+	RTS
+.error:
+	SEC
+	RTS
+	}
+; ----------------------------------------------------------------------------
+change_track_if_necessary:
+
+	; Are all sectors read?
+
+	lda sectors_to_read
+	cmp #0
+	bne .no_track_change
+
+	; Are all other sectors processed ?
+
+	lda track_buffer
+	eor #SECTORS_PER_TRACK
+	clc
+	adc #TRACK_DATA_BANK
+	clc
+	adc #SECTORS_PER_TRACK	; first sector after the end of buffer
+
+!if compression = LZ {
+	cmp pointer + 1
+} else {
+	cmp stripe_index + 1
+}
+	bne .no_track_change
+
+change_track:
+
+	; Track advance and buffer swap
+
+	lda stay_on_first_track
+	cmp #1
+	beq keep_first_track
+
+	jsr advance_drive_latch
+	bcc track_advanced
+
+	SEC
+	RTS
+keep_first_track:
+	lda #0
+	sta stay_on_first_track
+
+track_advanced:
+
+	;;  Set pointer (attenion! we only reset the pointer when at the end of BOTH the buffers)
+
+	lda #TRACK_DATA_BANK_OUT
+	cmp pointer + 1
+	bne .not_at_end
+	;; jsr huff_pointer_at_end
+	;; bcc .not_at_end
+	+sub_const_from_16 pointer, 2*SECTORS_PER_TRACK*BYTES_PER_SECTOR
+.not_at_end:
+
+	; switch track buffer
+
+	lda track_buffer
+	eor #SECTORS_PER_TRACK
+	sta track_buffer
+
+	lda #SECTORS_PER_TRACK
+	sta sectors_to_read
+
+	JSR clear_read_status
+
+	; Set stripe index
+
+	lda #0
+	sta stripe_index
+
+	lda track_buffer
+	eor #SECTORS_PER_TRACK
+	clc
+	adc #TRACK_DATA_BANK
+	sta stripe_index + 1
+
+
+
+
+.no_track_change:
+	CLC
+	RTS
+
+; ----------------------------------------------------------------------------
+
+check_stripe_at_end:
+	lda track_buffer
+	eor #SECTORS_PER_TRACK
+	clc
+	adc #TRACK_DATA_BANK
+	clc
+	adc #SECTORS_PER_TRACK	; Last sector + 1 (ie one sector too far)
+	cmp stripe_index + 1	; Hi byte of stripe index beacuse a sector is 256 bytes.
+	beq .at_end
+	CLC
+	RTS
+.at_end:
+	SEC
+	RTS
+
+; ----------------------------------------------------------------------------
+
+clear_read_status:
+	!zone {
+	lda #0
+	ldy track_buffer
+	ldx #0
+.loop:
+	sta track_status,y
+	iny
+	inx
+	cpx #SECTORS_PER_TRACK
+	bne .loop
+	}
+
+	rts
+
+; ----------------------------------------------------------------------------
+
+!if DRAW_STATUS = 1 {
+draw_status:
+
+	;; Draw the track status
+
+	ldy #0
+draw_status0:
+	LDA track_status, Y
+	STA 2000,Y
+
+	LDA track_status + SECTORS_PER_TRACK, Y
+	ASL
+	ASL
+	ASL
+	ASL
+	ORA 2000,Y
+	STA 2000,Y
+
+	INY
+	CPY #SECTORS_PER_TRACK
+	BNE draw_status0
+
+	;;  Draw the memory pointer
+
+	LDX #$05
+	LDA pointer+1
+	SEC
+	SBC #TRACK_DATA_BANK
+	CMP #16
+	BMI .zorg
+
+	SEC
+	SBC #16
+	LDX #$50
+.zorg:
+	TAY
+	TXA
+	ORA 2000,Y
+	STA 2000,Y
+
+	;; Draw the disk head
+
+	ldy sect
+	lda #$66
+	sta 2000,Y
+
+	;; Draw the skipped sectors
+
+	ldy sectors_passed
+	lda #$ff
+	sta 2000,Y
+	RTS
+}
+
+; ----------------------------------------------------------------------------
+;processed_bufferg	!byte 0	; Number of the processed buffer (relative to curren track buffer)
+processed_buffer_hibyte	!byte 0 ; hi byte of a pointer to the currently processed buffer
+
+stripes_to_process	!byte 0
+
+stripes_per_run	= 25
+
+
+; -----------------------------------------------------------------------------
+
+STRIPES_PER_SECTOR = 128
+TOTAL_FRAMES	= 2190
+
+;; end_picture_reached  !byte 0
+
+frame_number	!word 0
+half_frame	!byte 0
+
+process_a_frame:
+
+
+	lda frame_number
+	cmp #(TOTAL_FRAMES & $FF)
+	bne .frames_left
+	lda frame_number + 1
+	cmp #(TOTAL_FRAMES >> 8)
+	bne .frames_left
+	sec
+	rts
+
+.frames_left:
+	lda half_frame
+	and #1
+	bne process_a_frame_loop
+
+	jsr sound
+
+process_a_frame_loop2:
+	JSR load_current_stripe
+	BCS .end2
+	JSR draw_a_stripe
+
+	LDA #2
+	+add_a_to_16 stripe_index
+
+	; Reached the end of screen ?
+
+	LDA #>(GR_RAM + $200)
+	CMP screen_pointer+1
+	BNE process_a_frame_loop2
+	inc half_frame
+.end2:
+	rts
+	;; jmp .end
+
+process_a_frame_loop:
+	JSR load_current_stripe
+	BCS .end
+	JSR draw_a_stripe
+
+	LDA #2
+	+add_a_to_16 stripe_index
+
+	; Reached the end of screen ?
+
+	LDA #>(GR_RAM + $400)
+	CMP screen_pointer+1
+	BNE process_a_frame_loop
+
+	;;  Yep, reached. So we reset.
+
+	+store_16 screen_pointer, GR_RAM
+	inc half_frame
+	+inc16 frame_number
+
+.end:
+	RTS
+
+
+; ----------------------------------------------------------------------------
+TRACKS_PER_SIDE	= 35
+advance_drive_latch:
+	LDA curtrk
+	CMP #((TRACKS_PER_SIDE-1)*2)	; Are we on the last track
+	BEQ .disk_end			; yes, don't go any further
+	CLC
+	ADC #2	; A = desired halftrack; curtrk = current track
+.good:
+	ldx #SLOT_SELECT
+	JSR seek
+.disk_end:
+	CLC
+	RTS
+; ----------------------------------------------------------------------------
+
+
+read_half_track  	!byte 0
+processed_half_track  	!byte 8
+
+halftracks		= *
+halftrack0		!fill 8,0
+halftrack1		!fill 8,0
+
+
+; ----------------------------------------------------------------------------
+
+load_current_stripe:
+	!zone {
+
+!if compression = LZ {
+	jsr huff_pointer_at_end
+} else {
+	jsr check_stripe_at_end
+}
+
+	bcs .error
+
+
+
+!if compression = LZ {
+	jsr read_bits
+	clc
+	rol data
+	rol data + 1
+	lda data
+	sta stripe_ptr
+	lda data+1
+	sta stripe_ptr+1
+} else {
+	LDY #0
+	LDA (stripe_index),Y
+	STA stripe_ptr
+	INY
+	LDA (stripe_index),Y
+	STA stripe_ptr + 1	; stripe_ptr = stripe_index* = number of the stripe * 2
+}
+	;; Debug code
+
+;; 	jsr read_bits
+;; 	clc
+;; 	rol data
+;; 	rol data + 1
+;; 	lda data
+;; 	cmp stripe_ptr
+;; 	beq .zop
+;; .zip
+;; 	brk
+;; .zop
+;; 	lda data + 1
+;; 	cmp stripe_ptr + 1
+	;; 	bne .zip
+
+;;  End debug code
+
+	; Reached the end of stripes ? (stripe number $FFFF)
+
+	LDA #$FF
+	CMP stripe_ptr
+	BNE .not_last_stripe
+	CMP stripe_ptr + 1
+	BNE .not_last_stripe
+
+	; Stay stuck on end of stripes until someone moves us out.
+.error
+	SEC ; mark last
+	RTS
+
+.not_last_stripe:
+	+add_const_to_16 stripe_ptr, stripes_indices	; stripe_ptr = stripe_indices + stripe_ptr = stripe_indices + number of the stripe * 2
+
+	LDY #0
+	LDA (stripe_ptr),Y
+	STA cmd_pointer
+	INY
+	LDA (stripe_ptr),Y
+	STA cmd_pointer + 1		; cmd_pointer = stripe_ptr* = stripe_indices[ number of stripe * 2]
+
+	; So at this point cmd_pointer points to the stripe data.
+
+	CLC	     ; mark we can go on
+	RTS
+	}
+
+; -----------------------------------------------------------------------------
+
+advance_stripe_pointer:
+	!zone {
+
+	; Go to next stripe
+
+	LDA #2
+	+add_a_to_16 stripe_index
+
+	RTS
+	}
+
+
+; -----------------------------------------------------------------------------
+
+draw_a_stripe:
+	LDY #0									; 3 c
+       	LDA (cmd_pointer),Y ; load command					; 4 c
+	STA command_byte      	   						; 4 c
+
+	CMP #128								; 2 c
+	BPL tile_copy								; 2+ c
+	BEQ tile_copy								; 2+ c
+
+       	AND #%11100000								; 2 c
+       	CMP #%00000000								; 2 c
+       	BEQ fill_white								; 2+ c
+       	CMP #%00100000								; 2 c
+       	BEQ fill_black								; 2+ c
+       	CMP #%01000000								; 2 c
+       	BEQ fill_transparent ;  2+ c
+
+done_rle:
+	RTS									; 6 c => total 37 +? 5
+
+tile_copy:
+; FIXME reuse Acc from test above
+  	TAX									; 2 c
+
+	LDY #1	; peek one byte further.					; 2 c
+	LDA (cmd_pointer),Y							; 4 c
+
+	LDY #0	;From now on, Y is the screen pointer				; 2 c
+
+	CMP #$FF      	      	       	      					; 2 c
+	BNE two_tiles_at_least							; 2+ c
+
+	; just one tile
+
+	+inc16 cmd_pointer ; skip the $FF mark
+	JMP last_tile_copy							; 3 c
+
+two_tiles_at_least:
+	; Copy the first tile
+	; First tile is special case because it has a flag on it.
+
+	TXA									; 2 c
+	JSR tile_expand								; 6 c
+	+inc16 cmd_pointer							; 12/15 c
+
+tile_copy_loop:
+	LDX #0									; 2 c
+       	LDA (cmd_pointer,X) ; data byte	(in this case tile number)		; 6 c
+
+	TAX		   ;  for later use ; 2 c
+	AND #$80								; 2 c
+	BNE last_tile_copy							; 2+ c
+
+	JSR tile_expand								; 6 c => 17 or 40
+
+	+inc16 cmd_pointer							; 12/15 c
+	JMP tile_copy_loop							; 4 => n * (28+ +6 +17/40 + 12/15) => n * (63 +? 26) for two_tiles_at_least
+
+last_tile_copy:
+	;; LDX #0									; 2 c
+       	;; LDA (cmd_pointer,X) ; data byte	(in this case tile number)		; 6 c
+	TXA        	; remember data byte2 c
+	AND #127	    ; remove last tile flag				; 2 c
+
+	JSR tile_expand	      	     	       					; 6 c
+	+inc16 cmd_pointer							; 12/15
+
+	TYA    									; 2 c
+	+add_a_to_16 screen_pointer						; 16 c
+	RTS	     								; 6 c
+
+
+fill_white:
+	LDX #$FF	; $22 = dark blue						; 2 c
+	JMP fill_row_plus_byte	     							; 6 c
+
+fill_black:
+	LDX #$00	; $33 = purple
+	JMP fill_row_plus_byte
+
+fill_transparent:
+	;LDX #$CC	; green
+	;JMP fill_row_plus_byte
+
+	JMP add_last_byte
+
+
+
+
+fill_row_plus_byte:
+
+	; We'll write count white/black bytes plus and additional data byte.
+	; count = 3
+	; 0,1,2 => 0,1 2,3 4,5 => 0 .. count*2 -1
+
+	LDA command_byte   ; 3 c
+	AND #%00011111	; How many bytes to copy (not counting the extra data byte)	; 2 c
+	CLC 		      	   	    	      	       	   	      		; 2 c
+	ADC #1 		; 0 based coutn to 1 based count (0 means 1 pixel)		; 2 c
+	ASL 		; counter * 2 because each byte is 2x2 pixels			; 2 c
+	TAY		  	      	      	   	       				; 2 c
+
+	TXA		; Remember the color						; 2 c => Total 12 cycles
+fill_black_or_white:
+	DEY										; 2 cycles
+       	STA (screen_pointer),Y								; 6 cycles
+	DEY 										; 2 c
+       	STA (screen_pointer),Y								; 6 c
+       	BNE fill_black_or_white								; 2 or 3 c => loop total n*19-1 cycles
+
+
+add_last_byte:
+	LDA command_byte								; 2 c
+	AND #%00011111	; How many compressed bytes to load				; 2 c
+	ASL 		; each compressed byte will give two bytes in video ram		; 2 c
+	ADC #2		; (carry cleared by ASL because hi bit is always zero) 0-based							; 2 c
+
+	+add_a_to_16 screen_pointer	      ; screen_pointer += counter + 1		; 16 c
+
+	LDY #1										; 2 c
+	LDA (cmd_pointer),Y	; Load data byte					; 5 c
+
+	LDY #0 ; screen pointer is at right position					; 2 c
+	JSR tile_expand		      	    						; 6 c + (17 or 40)
+
+	LDA #2										; 2 c
+	+add_a_to_16 screen_pointer	; skip the tile we've just written		; 16 c
+	LDA #2										; 2 c
+	+add_a_to_16 cmd_pointer	; Skip cmd byte and data byte			; 16 c
+       	RTS	     			       	   	    	 			; 6 c => add_last_byte = 83 + (17 or 40)
+
+											; fill_row_plus_one_byte : 12 + (n*19-1) + 83 + (17 or 40) = 111 + 19*n +? 23
+
+; ------------------------------------------------------------------------------
+
+tile_expand:
+	AND #127	; A = tile number						; 2 c
+	CMP #$7E	      	   							; 2 c
+	BEQ expand_transparent_tile							; 2+ c
+	ASL ; A = tile index								; 2 c
+
+	TAX   	       									; 2 c
+	LDA tiles,X									; 5+ c
+	STA (screen_pointer),Y								; 6
+	INY 										; 2
+	LDA tiles+1,X									; 5+
+	STA (screen_pointer),Y								; 6
+	INY 										; 2
+	RTS										; 6 => tile expand = 40 cycles
+
+expand_transparent_tile:
+	INY										; 2
+	INY										; 2
+	RTS										; 6 => tile expand = 17 cycles
+
+
+line_count !byte 0
+
+dummy_data:
+	!fill 512,$39
+
+show_frame:
+
+	lda #<dummy_data
+	sta tile_pointer
+	lda #>dummy_data
+	sta tile_pointer+1
+
+
+	; There will be 40x48/4 = 480 tiles => I need more than a register to iterate over them.
+	; Or I can work with rows of tiles.
+
+	+store_16 screen_pointer, GR_RAM
+
+	; screen_pointer_plus_one := screen_pointer + 1
+
+	clc
+	lda screen_pointer
+	adc #1
+	sta screen_pointer_plus_one
+	lda screen_pointer + 1
+	adc #0
+	sta screen_pointer_plus_one + 1
+
+iterations  = 16
+
+	lda #(512/iterations)
+	sta line_count
+
+.show_frame_line_loop:
+	!for tile_ndx, iterations {
+	!zone {
+	ldy #(tile_ndx-1)
+	lda (tile_pointer),y
+
+	; The tile number is coded on the 7th lo bits.
+	ASL										; 2 c
+	CMP #($7E*2)	      	   							; 2 c
+	BEQ .next_tile							; 2+ c
+
+	TAX   	       									; 2 c
+
+	LDY #((tile_ndx-1)*2)
+	LDA tiles,X									; 5+ c
+	STA (screen_pointer),Y								; 6
+	LDA tiles+1,X									; 5+
+	STA (screen_pointer_plus_one),Y								; 6
+.next_tile
+	}}
+
+	dec line_count
+	beq show_frame_finish
+
+	+add_const_to_16 tile_pointer, iterations	; screen is 40*48 => 1960 pixles =>  980 bytes, but there are gaps : 1024 bytes. Tiles code 4 pixles per byte => 512 bytes
+	+add_const_to_16 screen_pointer, iterations*2
+	+add_const_to_16 screen_pointer_plus_one, iterations*2
+
+	jmp .show_frame_line_loop
+
+show_frame_finish:
+	RTS										; 6 => tile expand = 17 cycles
+
+
+
+; =============================================================================
+
+println:
+looppln:
+        ldx   #0
+	; The LDA will be self modified by the writeln macro
+	; to point to the actual message.
+println_self_mod:
+	lda   $0000,x                    ;Get the next character
+        cmp   #0                       ;End of the string?
+        beq   donepln                     ;->Yes!
+
+	clc
+	adc #$80	; Convert ASCII to Apple character map
+        jsr COUT                     ;Print it out
+
+	+inc16 println_self_mod+1
+        jmp looppln                     ;And continue printing
+donepln:
+	rts                            ;All finished!
+
+
+; ------------------------------------------------------------------------------
+
+set_gr_mode:
+	; set GR mode, full screen
+	LDA $C052
+	LDA $C054
+	LDA $C056
+	LDA $C050 ; last for cleaner mode change (according to Apple doc)
+	RTS
+
+; =============================================================================
+
+; A = color to fill
+
+clear_screen:
+	LDX #$FF
+clear_screen1:
+	STA GR_RAM,X
+	STA GR_RAM+$100,X
+	STA GR_RAM+$200,X
+	STA GR_RAM+$300,X
+	DEX
+	CPX #$FF
+	BNE clear_screen1
+	RTS
+
+; =============================================================================
+
+copy_screen:
+	LDX #0
+
+copy_screen1:
+	!for bank, 4 {
+	!for part, 3 {
+	LDA 2000 + 256*(bank-1) + 40*(part-1),X
+	STA GR_RAM + 256*(bank-1) + 40*(part-1),X
+	}
+	}
+
+	INX
+	CPX #40
+	BNE copy_screen1
+
+; =============================================================================
+
+clear_sectors:
+	ldx #40
+	lda #00
+clear_sectors2:
+	sta 2000,X
+	dex
+	BNE clear_sectors2
+	sta 2000
+	rts
+
+; -----------------------------------------------------------------------------
+
+sector_zero:
+	; Restart the motor
+
+	ldx #SLOT_SELECT
+	LDA $C089, X
+
+	ldx #SLOT_SELECT
+	jsr rdadr16
+
+	lda track
+	asl
+	sta curtrk
+
+seek_track_zero:
+	lda curtrk
+	cmp #0
+	beq track_zero
+	jsr advance_drive_latch
+	jmp seek_track_zero
+
+track_zero:
+	ldx #SLOT_SELECT
+	jsr rdadr16
+	bcc sector_zero_end
+
+	lda sect
+	cmp #15
+	bne track_zero
+
+sector_zero_end:
+	rts
+
+
+; -----------------------------------------------------------------------------
+
+old_sect	!byte 0
+sectors_passed	!byte 0
+
+; =============================================================================
+
+init_disk_read:
+
+	; Read first sector so we know the drive's head is on the first track.
+	; I use prodos to do that 'cos it's much simpler
+
+	LDA #1
+	STA block_read
+	LDA #0
+	STA block_read + 1
+	JSR MLI
+	!byte $80	; Operation ($80=READ_BLOCK, $81=write)
+	!word prodos_params	    ; $0E0C
+
+	; ProDOS has done its job, we configure ourselves accordingly.
+
+	LDA #SLOT_SELECT
+	STA slotz
+	LDA #0
+	STA curtrk
+
+	; Restart the motor
+
+	ldx #SLOT_SELECT
+!if DRIVE_SELECT = $80 {
+	LDA $C08B, X
+}
+	LDA $C089, X
+
+	RTS
+
+
+
+; =============================================================================
+
+	!align 255,0
+
+make_pause:
+	STA pause_count
+make_pause2:
+	LDA #$FF
+make_pause1:
+	SEC	; 2 cycles
+	SBC #1	; 2 cycles
+	BNE make_pause1	; 2 or 3 cycles => 255 * (2+2+3) = 1785 cycles, * 40 = 71400 cycles per frame => 71400 cycles out of 100000 (1/10 of second) => 70% free time !
+
+	DEC pause_count	; 6 cycles
+	BNE make_pause2 ; 2 or 3 cycles => 40*(6+3) = 400
+no_pause:
+	RTS
+
+pause_count	!word 0
+
+
+
+; LINE_OFFSET !word 1024,1152,1280,1408,1536,1664,1792,1920,1064,1192,1320,1448,1576,1704,1832,1960,1104,1232,1360,1488,1616,1744,1872,2000
+
+
+
+phaseoff         =        $c080                     ;stepper phase off.
+
+
+drvindx         pha                                              ;preserve acc.
+                lda          unitnum
+                lsr
+                lsr
+                lsr
+                lsr
+                cmp          #$8
+                and          #$7
+                rol
+                tax                                              ;into x for index to table
+                pla                                              ;restore acc.
+                rts
+
+; ====================================================================
+
+myseek          asl                                          ;assume two phase stepper.
+                sta          track                            ;save destination track(*2)
+                jsr          alloff                           ;turn all phases off to be sure.
+                jsr          drvindx                          ;get index to previous track for
+; current drive
+                lda          drv0trk,x
+                sta          curtrk                           ;this is where i am
+                lda          track                            ;and where i'm going to
+                sta          drv0trk,x
+                jsr          seek                             ;go there!
+alloff          ldy          #3                               ;turn off all phases before returning
+nxoff           tya                                           ;(send phase in acc.)
+                jsr          clrphase                         ;carry is clear, phases shold be turned
+; off
+                dey
+                bpl          nxoff
+                lsr          curtrk                           ;divide back down
+                clc
+                rts                                           ;all off... now it's dark
+
+
+; **************************
+; *                        *
+; * fast seek subroutine *
+; **************************
+; *                        *
+; *    on entry ----   *
+; *                        *
+; * x-reg holds slotnum    *
+; *         times $10.     *
+; *                        *
+; * a-reg holds desired    *
+; *         halftrack.     *
+; *         (single phase) *
+; *                        *
+; * curtrk holds current *
+; *          halftrack.    *
+; *                        *
+; *    on exit -----   *
+; *                        *
+; * a-reg uncertain.       *
+; * y-reg uncertain.       *
+; * x-reg undisturbed.     *
+; *                        *
+; * curtrk and trkn hold *
+; *      final halftrack. *
+; *                        *
+; * prior holds prior      *
+; *    halftrack if seek   *
+; *    was required.       *
+; *                        *
+; * montimel and montimeh *
+; *    are incremented by *
+; *    the number of       *
+; *    100 usec quantums   *
+; *    required by seek    *
+; *    for motor on time   *
+; *    overlap.            *
+; *                        *
+; * --- variables used --- *
+; *                        *
+; * curtrk, trkn, count, *
+; *    prior, slottemp     *
+; *    montimel, montimeh *
+; *                        *
+; **************************
+
+ibtrk            !byte            $00
+ibsect           !byte            $00
+ibstat           !byte            $00
+iobpdn           !byte            $00
+curtrk           !byte            $00
+drv0trk          =           *-2
+                 !byte            0,0,0,0,0,0,0                 ;for slots 1 thru 7
+
+                  !byte         0,0,0,0,0,0,0                   ;drives 1 & 2
+retrycnt          !fill          1,0
+seekcnt           !fill          1,0
+; *
+; ************************
+; *                        *
+; *     readadr----    *
+; *                        *
+; ************************
+count             =        *                               ;'must find' count.
+last              !fill          1,0                             ;'odd bit' nibls.
+csum              !fill          1,0                             ;used for address header cksum
+csstv             !fill          4,0                             ;four bytes,
+; *        checksum, sector, track, and volume.
+sect              =        csstv+1
+track             =        csstv+2
+volume            =        csstv+3
+; *
+trkcnt            =        count                           ;halftrks moved count.
+prior             !fill          1,0
+trkn              !fill          1,0
+
+; **************************
+; *                          *
+; * phase on-, off-time      *
+; *    tables in 100-usec    *
+; *    intervals. (seek)     *
+; *                          *
+; **************************
+ontable           !byte         1,$30,$28
+                  !byte         $24,$20,$1e
+                  !byte         $1d,$1c,$1c
+offtable          !byte         $70,$2c,$26
+                  !byte         $22,$1f,$1e
+                  !byte         $1d,$1c,$1c
+
+seek            sta             trkn                          ;save target track
+                cmp             curtrk                        ;on desired track?
+                beq             setphase                      ;yes,energize phase and return
+                lda             #$0
+                sta             trkcnt                        ;halftrack count.
+seek2           lda             curtrk                        ;save curtrk for
+                sta             prior                         ;delayed turnoff.
+                sec
+                sbc             trkn                          ;delta-tracks.
+                beq             seekend                       ;br if curtrk=destination
+                bcs             out                           ;(move out, not in)
+                eor             #$ff                          ;calc trks to go.
+                inc             curtrk                        ;incr current track (in).
+                bcc             mintst                        ;(always taken)
+out             adc             #$fe                          ;calc trks to go.
+                dec             curtrk                        ;decr current track (out).
+mintst          cmp             trkcnt
+                bcc             maxtst                        ; and 'trks moved'.
+                lda             trkcnt
+maxtst          cmp             #$9
+                bcs             step2                         ;if trkcnt>$8 leave y alone (y=$8).
+                tay                                           ;else set acceleration index in y
+                sec
+step2           jsr             setphase
+                lda             ontable,y                     ;for 'ontime'.
+                jsr             mswait                        ;(100 usec intervals)
+                lda             prior
+                clc                                           ;for phaseoff
+                jsr             clrphase                      ;turn off prior phase
+                lda             offtable,y                    ; then wait 'offtime'.
+                jsr             mswait                        ;(100 usec intervals)
+                inc             trkcnt                        ; 'tracks moved' count.
+                bne             seek2                         ;(always taken)
+seekend         jsr             mswait                        ;settle 25 msec
+                clc                                           ;set for phase off
+
+setphase        lda             curtrk                        ;get current track
+clrphase        and             #3                            ;mask for 1 of 4 phases
+                rol                                           ;double for phaseon/off index
+                ora             slotz
+                tax
+                lda             phaseoff,x                    ;turn on/off one phase
+                ldx             slotz                         ;restore x-reg
+                rts                                           ;and return
+
+; *
+; **************************
+; *                          *
+; *    mswait subroutine     *
+; *                          *
+; **************************
+; *                          *
+; * delays a specified       *
+; *    number of 100 usec    *
+; *    intervals for motor *
+; *    on timing.            *
+; *                          *
+; *     on entry ----    *
+; *                          *
+; * a-reg: holds number      *
+; *         of 100 usec      *
+; *         intervals to     *
+; *         delay.           *
+; *                          *
+
+; *     on exit -----   *
+; *                         *
+; * a-reg: holds $00.       *
+; * x-reg: holds $00.       *
+; * y-reg: unchanged.       *
+; * carry: set.             *
+; *                         *
+; * montimel, montimeh      *
+; *    are incremented once *
+; *    per 100 usec interval*
+; *    for moton on timing. *
+; *                         *
+; *     assumes ----    *
+; *                         *
+; *    1 usec cycle time    *
+; *                         *
+; **************************
+montimel          =        csstv+2                         ;motor-on time
+montimeh          =        montimel+1                      ;counters.
+
+mswait           ldx              #$11
+msw1             dex              ;delay                        ; 86 usec.
+                 bne              msw1
+                 inc              montimel
+                 bne              msw2                          ;double-byte
+                 inc              montimeh                      ;increment.
+msw2             sec ;s
+                 sbc              #$1                           ;done 'n' intervals?
+                 bne              mswait                        ;(a-reg counts)
+                 rts
+
+
+
+!align 255, 0
+; ****************************
+; *                          *
+; *    read address field    *
+; *        subroutine        *
+; *    (16-sector format)    *
+; *                          *
+; ****************************
+; *                          *
+; *    reads volume, track   *
+; *        and sector        *
+; *                          *
+; *    on entry ----     *
+; *                          *
+; * xreg: slotnum times $10 *
+; *                          *
+; * read mode (q6l, q7l)     *
+; *                          *
+; *    on exit -----     *
+; *                          *
+; * carry set if error.      *
+; *                          *
+; * if no error:             *
+; *    a-reg holds $aa.      *
+; *    y-reg holds $00.      *
+; *    x-reg unchanged.      *
+; *    carry clear.          *
+; *                          *
+; *    csstv holds chksum,   *
+; *      sector, track, and *
+; *      volume read.        *
+; *                          *
+; *    uses temps count,     *
+; *      last, csum, and     *
+; *      4 bytes at csstv.   *
+; *                          *
+; *     expects ----     *
+; *                          *
+; *   original 10-sector     *
+; * normal density nibls     *
+; *   (4-bit), odd bits,     *
+; *   then even.             *
+; *                          *
+; *     caution ----     *
+; *                          *
+; *         observe          *
+; *    'no page cross'       *
+; *      warnings on         *
+; *    some branches!!       *
+; *                          *
+; *     assumes ----     *
+; *                          *
+; *    1 usec cycle time     *
+
+; *                           *
+; ****************************
+
+q6l = $c08c
+
+;; Read here https://www.bigmessowires.com/2015/08/27/apple-ii-copy-protection/
+;; Every three bytes read, there's an additional one for disk encoding reason
+;; So if I read 768 times, that's 768 nibbles => 576 bytes => this can read up to two consecutive sectors I guess
+
+; d = count - $FC gives number of wait loops before finding signature $D5 $AA $96
+; if d == 0; then less than $FF - $FC (4) loops
+; if d == 1 : between 4 and 256+4 loops
+
+; A sector takes 12500 usec, a frame is 100000 usec => I should be able to read 8 sectors in one frame
+
+rdadr16          ldy          #$fc		; will count -4,-3,-2,-1,0 (three times) then three (count) times 256 => 768+3 = 771 counts
+                 sty          count                           ;'must find' count.
+
+		 lda sect
+		 sta old_sect
+
+rdasyn           iny
+                 bne          rda1                            ;low order of count.
+                 inc          count                           ;(2k nibls to find
+                 beq          rderr                           ; adr mark, else err)
+rda1             lda          q6l,x                           ;read nibl.
+                 bpl          rda1                            ;*** no page cross! ***
+rdasn1           cmp          #$d5                            ;adr mark 1?
+                 bne          rdasyn                          ;(loop if not)
+
+		 nop                                          ;added nibl delay.
+
+rda2             lda          q6l,x
+                 bpl          rda2                            ;*** no page cross! ***
+                 cmp          #$aa                            ;adr mark 2?
+                 bne          rdasn1                          ; (if not, is it am1?)
+
+        ldy          #$3                             ;index for 4-byte read. WIZ!!! checksum, sector, track, and volume.
+; *             (added nibl delay)
+rda3             lda          q6l,x
+                 bpl          rda3                            ;*** no page cross! ***
+                 cmp          #$96                            ;adr mark 3?
+                 bne          rdasn1                          ; (if not, is it am1?)
+
+	 ;sty count2   				      ; WIZ !!!
+         ;ldy          #$3                             ;index for 4-byte read. WIZ!!!
+                 sei                                          ;no interupts until address is tested.(carry is set)
+
+                 lda          #$0                             ;init checksum.
+rdafld           sta          csum
+rda4             lda          q6l,x                           ;read 'odd bit' nibl.
+                 bpl          rda4                            ;*** no page cross! ***
+                 rol                                          ;align odd bits, '1' into lsb.
+                 sta          last                            ; (save them)
+rda5             lda          q6l,x                           ;read 'even bit' nibl.
+                 bpl          rda5                            ;*** no page cross! ***
+                 and          last                            ;merge odd and even bits.
+                 sta          csstv,y                         ;store data byte.
+                 eor          csum
+                 dey
+                 bpl          rdafld                          ;loop on 4 data bytes.
+
+                 tay                                          ;if final checksum
+                 bne          rderr                           ;nonzero, then error.
+rda6             lda          q6l,x                           ;first bit-slip nibl.
+                 bpl          rda6                            ;*** no page cross! ***
+                 cmp          #$de
+                 bne          rderr                           ;error if nonmatch.
+                 nop                                          ;delay
+rda7             lda          q6l,x                           ;second bit-slip nibl.
+                 bpl          rda7                            ;*** no page cross! ***
+                 cmp          #$aa
+                 beq          rdgood                           ;error if nonmatch.
+rderr            sec
+                 rts
+
+rdgood:
+	lda old_sect
+	cmp sect	; compare A (old_sect) to sect | 0 to 9
+	beq rdsuccess
+	bmi .ok	; old_sect (A) < sect
+
+	lda sect ; old_sect > sect
+	clc
+	adc #SECTORS_PER_TRACK
+	sec
+	sbc old_sect	; A = sect - old_sect
+	clc
+	adc sectors_passed
+	sta sectors_passed
+
+	clc
+	rts
+
+.ok:
+	lda sect
+	sec
+	sbc old_sect	; A = sect - old_sect
+	clc
+	adc sectors_passed
+	sta sectors_passed
+
+rdsuccess:
+
+                 clc                                          ;clear carry on
+                 rts                                          ; normal read exits.
+
+!align 255, 0
+; **************************
+; *                         *
+; *      read subroutine    *
+; *    (16-sector format)   *
+; *                         *
+; **************************
+; *                        *
+; *    reads encoded bytes *
+; * into nbuf1 and nbuf2   *
+; *                        *
+; * first reads nbuf2      *
+; *           high to low, *
+; * then reads nbuf1       *
+; *           low to high. *
+; *                        *
+; *    on entry ----    *
+; *                        *
+; * x-reg: slotnum         *
+; *          times $10.    *
+; *                        *
+; * read mode (q6l, q7l) *
+; *                        *
+; *    on exit -----    *
+; *                        *
+; * carry set if error.    *
+; *                        *
+; * if no error:           *
+; *      a-reg holds $aa.  *
+; *      x-reg unchanged.  *
+; *      y-reg holds $00.  *
+; *      carry clear.      *
+; *    caution -----    *
+; *                        *
+; *         observe        *
+; *    'no page cross'     *
+; *       warnings on      *
+; *    some branches!!     *
+; *                        *
+; *    assumes ----     *
+; *                        *
+; *   1 usec cycle time    *
+; *                        *
+; **************************
+dnibl           =            *-$96
+                !byte             $00,$04
+                !byte             $ff,$ff,$08,$0c
+                !byte             $ff,$10,$14,$18
+twobit3         !byte             $00,$80,$40,$c0               ;used in fast prenib as lookup for 2-
+; bit quantities.
+                !byte             $ff,$ff,$1c,$20
+                !byte             $ff,$ff,$ff,$24
+                !byte             $28,$2c,$30,$34
+                !byte             $ff,$ff,$38,$3c
+                !byte             $40,$44,$48,$4c
+                !byte             $ff,$50,$54,$58
+                !byte             $5c,$60,$64,$68
+twobit2         !byte             $00,$20,$10,$30               ;used in fast prenib.
+endmrks         !byte             $de,$aa,$eb,$ff               ;table using 'unused' nibls
+; ($c4,$c5,$c6,$c7)
+                !byte             $ff,$ff,$ff,$6c
+                !byte             $ff,$70,$74,$78
+                !byte             $ff,$ff,$ff,$7c
+                !byte             $ff,$ff,$80,$84
+                !byte             $ff,$88,$8c,$90
+                !byte             $94,$98,$9c,$a0
+twobit1         !byte             $00,$08,$04,$0c               ;used in fast prenib.
+                !byte             $ff,$a4,$a8,$ac
+                !byte             $ff,$b0,$b4,$b8
+                !byte             $bc,$c0,$c4,$c8
+                !byte             $ff,$ff,$cc,$d0
+                !byte             $d4,$d8,$dc,$e0
+                !byte             $ff,$e4,$e8,$ec
+                !byte             $f0,$f4,$f8,$fc
+
+
+dnibl2           !byte            0
+dnibl3           !byte            0
+dnibl4           !byte            0
+nibl             !byte            $96,2,0,0,$97
+                 !byte            1,0,0,$9a,3,0,0,$9b
+                 !byte            0,2,0,$9d,2,2,0,$9e
+                 !byte            1,2,0,$9f,3,2,0,$a6
+                 !byte            0,1,0,$a7,2,1,0,$ab
+                 !byte            1,1,0,$ac,3,1,0,$ad
+                 !byte            0,3,0,$ae,2,3,0,$af
+                 !byte            1,3,0,$b2,3,3,0,$b3
+                 !byte            0,0,2,$b4,2,0,2,$b5
+                 !byte            1,0,2,$b6,3,0,2,$b7
+                 !byte            0,2,2,$b9,2,2,2,$ba
+                 !byte            1,2,2,$bb,3,2,2,$bc
+                 !byte            0,1,2,$bd,2,1,2,$be
+                 !byte            1,1,2,$bf,3,1,2,$cb
+                 !byte            0,3,2,$cd,2,3,2,$ce
+                 !byte            1,3,2,$cf,3,3,2,$d3
+                 !byte            0,0,1,$d6,2,0,1,$d7
+                 !byte            1,0,1,$d9,3,0,1,$da
+                 !byte            0,2,1,$db,2,2,1,$dc
+                 !byte            1,2,1,$dd,3,2,1,$de
+                 !byte            0,1,1,$df,2,1,1,$e5
+                 !byte            1,1,1,$e6,3,1,1,$e7
+                 !byte            0,3,1,$e9,2,3,1,$ea
+                 !byte            1,3,1,$eb,3,3,1,$ec
+                 !byte            0,0,3,$ed,2,0,3,$ee
+                 !byte            1,0,3,$ef,3,0,3,$f2
+                 !byte            0,2,3,$f3,2,2,3,$f4
+                 !byte            1,2,3,$f5,3,2,3,$f6
+                 !byte            0,1,3,$f7,2,1,3,$f9
+                 !byte            1,1,3,$fa,3,1,3,$fb
+                 !byte            0,3,3,$fc,2,3,3,$fd
+                 !byte            1,3,3,$fe,3,3,3,$ff
+; *
+nbuf2            !fill             $56,0                         ;nibl buffer for read/write of low 2-
+
+
+!align 255, 0
+read16            txa                                         ;get slot #.
+                  ora           #$8c                          ;prepare mods to read routine.
+                  sta           rd4+1                         ;warning: the read routine is self modified!!!
+                  sta           rd5+1
+                  sta           rd6+1
+                  sta           rd7+1
+                  sta           rd8+1
+                  lda           buf                           ;modify storage addresses also.
+                  ldy           buf+1
+                  sta           ref3+1
+                  sty           ref3+2
+                  sec
+                  sbc           #$54
+                  bcs           rd16b                         ;branch if no borrow.
+                  dey
+rd16b             sta           ref2+1
+                  sty           ref2+2
+                  sec
+                  sbc           #$57
+                  bcs           rd16c                         ;branch if no borrow.
+                  dey
+rd16c             sta           ref1+1
+                  sty           ref1+2
+                  ldy           #$20                          ;'must find count'
+rsync             dey
+                  beq           rderr2                        ;branch if can't find data header
+; marks.
+rd1               lda           q6l,x
+
+                    bpl            rd1
+rsync1              eor            #$d5                          ;first data mark.
+                    bne            rsync
+                    nop                                          ;waste a little time...
+rd2                 lda            q6l,x
+                    bpl            rd2
+                    cmp            #$aa                          ;data mark 2
+                    bne            rsync1                        ;if not, check for first again.
+                    nop
+rd3                 lda            q6l,x
+                    bpl            rd3
+                    cmp            #$ad                          ;data mark 3
+                    bne            rsync1                        ;if not, check for data mark 1 again.
+                    ldy            #$aa
+                    lda            #0
+rdata1              sta            wtemp                         ;use zpage for checksum keeping.
+rd4                 ldx            $c0ec                         ;warning: self modified.
+                    bpl            rd4
+                    lda            dnibl,x
+                    sta            nbuf2-$aa,y                   ;save the two-bit groups in nbuf.
+                    eor            wtemp                         ;update checksum.
+                    iny                                          ;bump to next nbuf position.
+                    bne            rdata1                        ;loop for all $56 two-bit groups.
+                    ldy            #$aa                          ;now read directly into user buffer.
+                    bne            rd5                           ;branch always taken!!!
+; *
+rderr2              sec
+                    rts
+; *
+ref1                sta            $1000,y                       ;warning: self modified!
+; *
+rd5                 ldx            $c0ec
+                    bpl            rd5
+                    eor            dnibl,x                       ;get actual 6-bit data from dnib table.
+                    ldx            nbuf2-$aa,y                   ;get associated two-bit pattern.
+                    eor            dnibl2,x                      ;and combine to form whole byte.
+                    iny
+                    bne            ref1                          ;loop for $56 bytes.
+                    pha                                          ;save this byte for now, no time to
+; store...
+                    and            #$fc                          ;strip low bits...
+                    ldy            #$aa                          ;prepare for next $56 bytes.
+rd6                 ldx            $c0ec
+                    bpl            rd6
+                    eor            dnibl,x
+                    ldx            nbuf2-$aa,y
+                    eor            dnibl3,x
+ref2                sta            $1000,y                       ;warning: self modified.
+                    iny
+                    bne            rd6                           ;loop until this group of $56 read in.
+; *
+rd7                 ldx            $c0ec
+                    bpl            rd7
+                    and            #$fc
+                    ldy            #$ac                          ;last group is $54 long.
+rdata2              eor            dnibl,x
+                    ldx            nbuf2-$ac,y
+                    eor            dnibl4,x                      ;combine to form full byte.
+ref3                sta            $1000,y
+rd8                 ldx            $c0ec                         ;warning: self modified.
+                    bpl            rd8
+                    iny
+                    bne            rdata2
+
+                    and            #$fc
+                    eor            dnibl,x                       ;check sum ok?
+                    bne            rderr1                        ;branch if not.
+                    ldx            slotz                         ;test end marks.
+rd9                 lda            q6l,x
+                    bpl            rd9
+                    cmp            #$de
+                    clc
+                    beq            rdok                          ;branch if good trailer...
+rderr1              sec
+rdok                pla                                          ;place last byte into user buffer.
+                    ldy            #$55
+                    sta            (buf),y
+                    rts
+
+
+flag_4_bits	!byte 0
+data		!word 0
+
+;;  ---------------------------------------------------------------------------
+
+huff_pointer_at_end:
+	!zone {
+	lda track_buffer
+	eor #SECTORS_PER_TRACK
+	clc
+	adc #TRACK_DATA_BANK
+	clc
+	adc #SECTORS_PER_TRACK		; Last sector + 1 (ie one sector too far)
+	cmp pointer + 1	; Hi byte of stripe index beacuse a sector is 256 bytes.
+	beq .at_end
+	CLC
+	RTS
+.at_end:
+	SEC
+	RTS
+	}
+
+;;  ---------------------------------------------------------------------------
+
+read_a_byte:
+	;; jsr huff_pointer_at_end
+	;; bcs .the_end
+
+	+inc16 pointer	; leave A,X,Y unchanged
+	clc
+.the_end:
+	rts
+
+;;  ---------------------------------------------------------------------------
+
+shift_8_bits:
+	!zone {
+	; A = current byte
+
+	ldy #0
+	lda (pointer),Y
+	tax
+	lda flag_4_bits		; set zero
+	beq pick_whole
+pick_high_bits:
+
+	;;  2 bytes : AB CD
+	;;  shifting : B. .C
+	;;  or'ing : BC
+
+	txa	; affects flags
+	asl
+	asl
+	asl
+	asl
+	sta count1
+	jsr read_a_byte
+	bcs .end		; byte not ready
+
+	ldy #0
+	lda (pointer),Y
+	lsr
+	lsr
+	lsr
+	lsr
+	ora count1
+	clc			; LSR alters carry
+	rts
+pick_whole:
+	jsr read_a_byte
+	txa
+.end:
+	rts
+	}
+
+
+shift_4_bits:
+	!zone {
+	ldy #0
+	lda (pointer),Y
+	; A = current byte
+
+	;;  Pick the first 4 high bits
+	tax
+	lda flag_4_bits
+	eor #1
+	sta flag_4_bits
+	beq .pick_low_bits
+	txa	; affects flags
+	lsr
+	lsr
+	lsr
+	lsr
+	clc			; LSR atlers query
+	rts	; CHECK ensure always taken
+.pick_low_bits
+.advance_pointer
+	jsr read_a_byte
+	txa
+	and #$F
+	rts
+	}
+
+.byte_not_ready2:
+	rts
+
+read_bits:
+	jsr shift_4_bits
+	bcs .byte_not_ready2
+	cmp #%1110
+	bpl test_16_bits
+	beq test_16_bits
+
+	cmp #%1100
+	bpl test_12_bits
+	beq test_12_bits
+
+	cmp #%1000
+	bpl test_8_bits
+	beq test_8_bits
+
+lo_byte	= data
+hi_byte	= data + 1
+d1	= (1 << 3)
+d2	= (1 << 6) + (d1)
+d3	= (1 << 9) + (d2)
+
+test_4_bits:
+	ldy #0
+	sty hi_byte
+
+	and #%0111
+	sta lo_byte
+	rts
+
+test_8_bits:
+	ldy #0
+	sty hi_byte
+
+	and #%0011
+	asl
+	asl
+	asl
+	asl
+	sta lo_byte
+	jsr shift_4_bits
+	bcs .byte_not_ready
+	ora lo_byte
+
+	clc
+	adc #d1
+
+	sta lo_byte
+	rts
+
+test_12_bits:
+	;;  init with 12 bits
+	and #%0001
+	sta hi_byte
+
+	jsr shift_8_bits
+	bcs .byte_not_ready
+	sta lo_byte
+
+	+add_const_to_16 data, d2
+	rts
+
+test_16_bits:
+	;;  init with 16 bits
+	and #%0001
+	asl
+	asl
+	asl
+	asl
+	sta hi_byte
+	jsr shift_4_bits
+	bcs .byte_not_ready
+	ora hi_byte
+	sta hi_byte
+
+	jsr shift_8_bits
+	bcs .byte_not_ready
+	sta lo_byte
+
+	+add_const_to_16 data, d3
+
+.byte_not_ready:
+	rts
+
+
+
+; ----------------------------------------------------------------------------
+
+	;; 150 BPM => *2 300 BPM => same frequency as disk speed => I play a sound every 16 sectors
+sound_freq	!byte 0
+pause	!byte 0
+pitch	!byte 8
+
+ndx_partition	!byte 0
+
+	DO0 = 0
+	DO_D0 = 1
+	RE0 = 2
+	RE_D0 = 3
+	MI0 = 4
+	FA0 = 5
+	FA_D0 = 6
+	SOL0 = 7
+	SOL_D0 = 8
+	LA0 = 9
+	LA_D0 = 10
+	SI0 = 11
+
+
+	DO = 0 + 12
+	DO_D = 1 + 12
+	RE = 2 + 12
+	RE_D = 3 + 12
+	MI = 4 + 12
+	FA = 5 + 12
+	FA_D = 6 + 12
+	SOL = 7 + 12
+	SOL_D = 8 + 12
+	LA = 9 + 12
+	LA_D = 10 + 12
+	SI = 11 + 12
+
+	DO2 = 0 + 24
+	DO_D2 = 1 + 24
+	RE2 = 2 + 24
+	RE_D2 = 3 + 24
+	MI2 = 4 + 24
+	FA2 = 5 + 24
+	FA_D2 = 6 + 24
+	SOL2 = 7 + 24
+	SOL_D2 = 8 + 24
+	LA2 = 9 + 24
+	LA_D2 = 10 + 24
+	SI2 = 11 + 24
+	END_PARTITION = 254
+	P = 255
+
+partition:
+	!byte MI,FA,SOL,LA,SI,DO
+	!byte MI2,RE2,SI,SI,MI,MI
+	!byte SI, SOL, FA, MI
+	!byte MI,FA,SOL,LA,SI, SI
+	!byte LA, SOL, FA, SI0, FA, SOL, FA, MI, RE, SOL
+	!byte END_PARTITION
+
+inner_loops !byte 218,206,195,183,173,163,154,145,137,129,122,115,109,103,97,91,86,81,77,72,68,64,61,57,54,51,48,45,43,40,38,36,34,32,30,28
+outer_loops !byte 1,1,1,1,2,2,2,2,2,2,2,3,3,3,3,3,4,4,4,4,5,5,5,6,6,6,7,7,8,8,9,9,10,11,11,12
+sound_skip	!byte 0
+
+sound:
+	pha
+
+	lda sound_skip
+	clc
+	adc #1
+	and #3
+	sta sound_skip
+	bne .done
+
+	ldx ndx_partition
+
+	lda partition, x
+	tax
+	lda outer_loops, X	; 6
+	clc
+	LSR
+	sta pause
+
+outer_loop:
+	lda inner_loops, X	; 6
+	clc
+	LSR
+	tay
+
+	LDA SPKR		; 4
+pause_looop:
+	lda inner_loops, X	; 6 pause
+	lda inner_loops, X	; 6 pause
+	lda inner_loops, X	; 6 pause
+	lda inner_loops, X	; 6
+	lda inner_loops, X	; 6
+	dey			; 2
+	bne pause_looop		; 3
+
+	CLC
+	LSR
+	LSR
+	LSR
+	TAY
+
+	LDA SPKR		; 4
+pause_looop2:
+	lda inner_loops, X	; 6 pause
+	lda inner_loops, X	; 6 pause
+	lda inner_loops, X	; 6 pause
+	lda inner_loops, X	; 6
+	lda inner_loops, X	; 6
+	dey			; 2
+	bne pause_looop2		; 3
+
+
+	dec pause
+	bne outer_loop
+
+	lda ndx_partition
+	clc
+	adc #1
+	STA ndx_partition
+	tax
+	lda partition, x
+	cmp #END_PARTITION
+	bne .done
+	LDA #0
+	STA ndx_partition
+
+.done:
+	pla
+	rts
+
+
+counter	!word end_compressed - compressed
+
+copy_compressed:
+	+store_16 pointer, end_compressed - 1
+	+store_16 pointer2, disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR - 1 + 3 ; +3 extra bytes
+	ldy #0
+.loop:
+	lda (pointer),Y	; absolut,Y = 4+ cycles (ZP is +/- the same)
+	sta (pointer2),Y ; abso,Y = 5 cycles; ZP = 4 cycles
+	;;  DEY = 2, BNE = 3 when taken
+	;;  with loop unrolling : 4+5+2 = 11 cycles / byte
+	+dec16 pointer
+	+dec16 pointer2
+	+dec16 counter
+
+	lda counter
+	cmp #0
+	bne .loop
+	lda counter + 1
+	cmp #0
+	bne .loop
+
+
+	lda #SECTORS_PER_TRACK
+	sta track_buffer
+
+ 	lda #0
+ 	sta sectors_to_read
+
+	+store_16 pointer, disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR - 1 + 3 - (end_compressed - compressed) + 1
+
+	!zone {
+
+	lda #1			; sector is marked as read
+	ldy #0
+.loop:
+	sta track_status,y
+	iny
+	cpy #2*SECTORS_PER_TRACK
+	bne .loop
+	}
+	rts
+
+lo_hi_bits_reverse:
+	!for i, 256 {
+	!byte (((i-1) << 4) & $F0) + (((i-1) >> 4) & $0F)
+	}
+
+	!src "data.a"
+
+msg	!byte    $0D,$0D,$0D,$0D,$0D,$0D,$0D,$0D,$0D
+   	!text    "----------------------------------------", $0D
+   	!text    "BAD APPLE", $0D
+	!text    "                        WIZ / IMPHOBIA !", $0D
+	!text    $0D
+	!text    $0D
+	!text	  "GREETZ TO PL, SCORPIO, DARKNESS !", $0D
+	!text    $0D
+	!text    "THANKS TO ONSLAUGHT ON C64 FOR HAVING", $0D
+	!text    "PUT THE BAR SO HIGH :-)", $0D
+	!text    $0D
+	!text    "CONTACT: SCHAMPAILLER@SKYNET.BE", $0D
+	!text    $0D
+	!text	 "THIS PROGRAM IS COVERED BY THE", $0D
+	!text    "GNU GENERAL PUBLIC LICENSE VERSION 3", $0D
+	!text    "SEE HTTPS://WWW.GNU.ORG/LICENSES", $0D
+	!text	 "(C) 2019 S. CHAMPAILLER", $0D
+	!text    $0D
+   	!text    "----------------------------------------", $0D
+	!text    "FLIP DISK AND HIT ENTER TO BEGIN...", $0D
+        !byte    $00
+
+
+compressed:
+	!source "compressed.a"
+end_compressed:
