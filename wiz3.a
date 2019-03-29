@@ -163,11 +163,13 @@
 	JSR println
 }
 
-DRAW_STATUS = 0
+DRAW_STATUS = 1
 LZ	= 1
 NOCOMP	= 0
 compression = LZ		; LZ or NOCOMP
 TOTAL_FRAMES	= 2190		; Number of frames in the movie
+TRANSPARENT_TILE	= $7E
+
 
 GETLNZ 		= $FD67
 GETLNZ_PROMPT 	= $33
@@ -191,6 +193,7 @@ SECTORS_PER_TRACK 	= 16
 ; Zero page locations
 ; -------------------
 
+hgr_tile		= 224
 pointer		    	= 224
 pointer2		= 226
 lo_hi_bits_reverse_ptr	= 226
@@ -199,6 +202,7 @@ tile_pointer		= 230
 stripe_index		= 232
 count1			= 234
 count2			= 235
+count3			= 236
 remaining_bytes_on_line = 236
 command_byte		= 238
 line_split		= 239
@@ -211,6 +215,7 @@ screen_pointer	 	 = 246
 cmd_pointer	 	 = 248
 screen_line_ptr 	 = 250
 
+end_hgr_line_pointer  = 252
 screen_pointer_plus_one  = 252
 filler_ptr		 = 252
 dummy_ptr		= 254
@@ -255,10 +260,188 @@ track_seek_countdown !byte track_seek_countdown_value
 ; ####################################################################
 ; ### MAIN START
 ; ####################################################################
+hgr_tile_data:
+	;;  lo bits are aligned on the left
+	!byte 255,127,63,31,15,7,3,1
+	!byte 255,255,255,255,255,255,255,255
+	!byte 255,255,255,255,0,0,0,0
+	!byte %00111110
+	!byte %01000011
+	!byte %01000101
+	!byte %01001001
+	!byte %01010001
+	!byte %01100001
+	!byte %01010001
+	!byte %00111110
+
+tiles_hgr:
+	!for i,4 {
+	!word hgr_tile_data + 0*8 - 1
+	!word hgr_tile_data + 1*8 - 1
+	!word hgr_tile_data + 2*8 - 1
+	!word hgr_tile_data + 3*8 - 1
+	}
+
+hgr_strip:
+	!byte 0,1,2,3,2,1,0,0,1,2,3,2,1,0,0,1,2,3,2,1,0,0,1,2,3,2,1,0,0,1,2,3,2,1,0
+
+hgr_lines_offsets:
+	!for i,8 {
+	!word $2000 + (i-1)*$80
+	}
+	!for i,8 {
+	!word $2028 + (i-1)*$80
+	}
+	!for i,8 {
+	!word $2050 + (i-1)*$80
+	}
+
+
+!macro setup_hgr_line_pointers {
+	;; Compute beginnig and end of the first line of the tile on the screen
+	CLC
+	LDA hgr_current_line	; From 0 to 23 (x8 to have pixels => 0-184)
+	ASL
+	TAY
+	;; The hi-byte of count determines the line; the low byte gives offset in the line
+	LDA hgr_lines_offsets,Y
+	STA count1
+	LDA hgr_lines_offsets + 1,Y
+	STA count1 + 1
+	;;  Compute the end of the line
+	LDA hgr_lines_offsets,Y
+	ADC #40			; 40*7 = 280 pixels
+	STA end_hgr_line_pointer
+
+	}
+
+
+!macro advance_screen_pointers {
+	;;  Next tile (on screen)
+	clc
+	lda count1
+	adc #1
+
+.hgr_self_mod_end_line:
+	cmp end_hgr_line_pointer
+	bne .still_in_line
+	inc hgr_current_line
+
+	+setup_line_pointer
+
+	LDA hgr_lines_offsets,Y
+
+.still_in_line:
+	sta count1
+
+	}
+
+current_offset	!word $2020	;32
+hgr_current_line	!byte 3
+hgr_line_end	!word  $2028
+stripe_len	!byte 12
+scount1		!byte 0
+scount2		!byte 0
 
 
 main_start:
+
+	jsr set_hgr_mode
+
+	+store_16 stripe_ptr, hgr_strip
+	+setup_hgr_line_pointers
+
+	LDA count1
+	ADC #30
+	STA count1
+
+	LDA #10+3
+	STA count3
+
+.hgr_tile_loop1:
+	LDY count3
+	LDA (stripe_ptr),Y	; From tile number...
+	ASL
+	TAX
+	LDA tiles_hgr,X		; ...to tile pointer
+	STA .hgr_self_mod + 1
+	LDA tiles_hgr + 1,X
+	STA .hgr_self_mod + 1 + 1
+
+	ldx #8
+	ldy #0
+.hgr_tile_loop:
+.hgr_self_mod:
+	lda $FFFF,x		; 2 bytes load a line of the tile
+	sta (count1),Y		; 2 bytes show it on the screen
+	lda count1 + 1		; 2 bytes update the screen pointer (hi byte)
+	adc #4			; 2 bytes
+	sta count1 + 1		; 2 bytes
+	dex
+	bne .hgr_tile_loop
 	;; +store_16 lo_hi_bits_reverse_ptr, lo_hi_bits_reverse
+
+	SEC
+	sbc #32			; revert tile bytes, then advance one tile to the right
+	sta count1 + 1
+
+	;;  Next tile (on screen)
+	clc
+	lda count1
+	adc #1
+
+.hgr_self_mod_end_line:
+	cmp end_hgr_line_pointer
+	bne .still_in_line
+	inc hgr_current_line
+
+	+setup_line_pointer
+
+	LDA hgr_lines_offsets,Y
+
+.still_in_line:
+	sta count1
+
+	DEC count3
+	BNE .hgr_tile_loop1
+
+	JSR GETLNZ
+	JMP zorglub
+
+	;;  ---------------------------------------------------------------------
+
+	;;  Split stripe if necessary
+
+	lda current_offset 			; tiles to write
+	clc
+	adc stripe_len
+
+	cmp hgr_line_end
+	bmi no_split
+
+	; current_ofs + stripe_len < hgr_line_end
+
+	;; eor #$FF
+	;; clc
+	;; adc #$1
+
+	lda stripe_len
+	sta count1
+	lda #0
+	sta count2
+
+no_split:
+	lda hgr_line_end
+	sec
+	sbc current_offset
+	sta count1
+
+	lda stripe_len
+	sec
+	sbc count1
+	sta count2
+
+
 
 zorglub:
 	;; jsr load_current_stripe
@@ -818,6 +1001,37 @@ advance_stripe_pointer:
 
 ; -----------------------------------------------------------------------------
 
+x_save	!byte 0
+y_save	!byte 0
+a_save	!byte 0
+
+
+!macro	hgr_fill {
+
+	sta a_save
+	stx x_save
+	sty y_save
+
+	ldx #8
+	ldy #0
+	clc
+.loop:
+	lda $F000,X
+	sta ($F0),Y
+	lda count1
+	adc #$4
+	sta count1
+	dex
+	bne .loop
+
+	lda a_save
+	ldx x_save
+	ldy y_save
+
+	}
+
+				; -----------------------------------------------------------------------------
+
 draw_a_stripe:
 	LDY #0									; 3 c
        	LDA (cmd_pointer),Y ; load command					; 4 c
@@ -922,6 +1136,10 @@ fill_row_plus_byte:
 
 	TXA		; Remember the color						; 2 c => Total 12 cycles
 fill_black_or_white:
+
+	;; +hgr_fill
+	;; +hgr_fill
+
 	DEY										; 2 cycles
        	STA (screen_pointer),Y								; 6 cycles
 	DEY 										; 2 c
@@ -955,9 +1173,12 @@ add_last_byte:
 
 tile_expand:
 	AND #127	; A = tile number						; 2 c
-	CMP #$7E	      	   							; 2 c
+	CMP #TRANSPARENT_TILE	      	   							; 2 c
 	BEQ expand_transparent_tile							; 2+ c
 	ASL ; A = tile index								; 2 c
+
+	;; +hgr_fill
+	;; +hgr_fill
 
 	TAX   	       									; 2 c
 	LDA tiles,X									; 5+ c
@@ -1015,7 +1236,7 @@ line_count !byte 0
 
 ;; 	; The tile number is coded on the 7th lo bits.
 ;; 	ASL										; 2 c
-;; 	CMP #($7E*2)	      	   							; 2 c
+;; 	CMP #(TRANSPARENT_TILE*2)	      	   							; 2 c
 ;; 	BEQ .next_tile							; 2+ c
 
 ;; 	TAX   	       									; 2 c
@@ -1065,6 +1286,13 @@ donepln:
 
 
 ; ------------------------------------------------------------------------------
+set_hgr_mode:
+	; set GR mode, full screen
+	LDA $C052
+	LDA $C054
+	LDA $C057
+	LDA $C050 ; last for cleaner mode change (according to Apple doc)
+	RTS
 
 set_gr_mode:
 	; set GR mode, full screen

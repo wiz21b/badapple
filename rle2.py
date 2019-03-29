@@ -17,6 +17,26 @@ ffmpeg -i bad_apple_original.mp4 -an  -vf fps=10,scale=36:46  /tmp/bad_apple%05d
 1 side x 35 Tracks/side x 16 Sectors/Trk x 256 Bytes/Sec = 143,360 Bytes.
 prodos data disk : 139776
 
+
+8192 = y=0
+8192 + 1024 = y=1
+
+Dear qkumba,
+
+I've tested what you proposed, it worked flawlessly. Here's my code, just in case somebody wants the short version :
+
+	LDA $C08B ; Enable read and write to language card RAM
+	LDA $C08B ; yep, call twice.
+
+	LDX $E000 ; some testing (run that in AppleWin debugger)
+	LDA #$FF
+	STA $E000
+	LDA $E000
+
+Thanks for the explanation.
+
+Stefan
+
 """
 import platform
 import collections
@@ -34,6 +54,9 @@ import curses
 import huffman
 from array import array
 from bidict import bidict
+
+from utils import *
+
 
 MAX_PICTURES=15000 # 275 maximum one can put in a normal BIN file.
 SKIP_PICTURES=0
@@ -243,10 +266,6 @@ PIXEL_MATCHER = [ [ True, True, False, False ],
                   [ False, False, False, True] ]
 
 
-def ffmpeg():
-    if not os.path.exists("/tmp/bad_apple00009.png"):
-        if platform.system() == 'Linux':
-            os.system("ffmpeg -i bad_apple_original.mp4 -an  -vf fps=10,scale={}:{}  /tmp/bad_apple%05d.png".format(WIDTH, HEIGHT))
 
 def replace( packed_frame):
     d = [[0] * WIDTH, [0] * WIDTH]
@@ -696,6 +715,8 @@ def make_delta_frames_stream( frames, special_tiles, bytes_per_frame):
 
     assert len( frames) % bytes_per_frame == 0
 
+    stats_change = []
+
     delta_frames_stream = []
     delta_frames_stream.extend( frames[0:bytes_per_frame] )
 
@@ -710,7 +731,19 @@ def make_delta_frames_stream( frames, special_tiles, bytes_per_frame):
             else:
                 delta_frame.append( f[j])
 
+        # Compute some stats
+
+        unchanged = 0
+        for i in delta_frame:
+            if i == special_tiles.transparent:
+                unchanged += 1
+
+        stats_change.append(100.0 * unchanged/len(delta_frame))
         delta_frames_stream.extend( delta_frame)
+
+    avg = sum(stats_change)/len(stats_change)
+    stddev = sum( [ math.fabs( i - avg) for i in stats_change ])/len(stats_change)
+    print( "unchanged avg:{}, stddev:{}".format( avg, stddev))
 
     return delta_frames_stream
 
@@ -840,46 +873,6 @@ class Stripe:
             return [ repeat_byte, additional_tile_byte]
 
 
-def make_stripes(data_stream, special_tiles, bytes_per_frame=512):
-
-    assert len(data_stream) % bytes_per_frame == 0
-
-    all_stripes_codes = []
-    others = set( range(256))
-    others.remove( special_tiles.white)
-    others.remove( special_tiles.black)
-    others.remove( special_tiles.transparent)
-
-    for ndx in range( 0, len(data_stream), bytes_per_frame):
-        #print(ndx)
-        data = data_stream[ ndx:ndx+bytes_per_frame]
-        i = 0
-        while i < len(data):
-            if data[i] == special_tiles.transparent:
-
-                stripe, i = super_pack_line( data, i, special_tiles.transparent)
-                #stripe, i = pack_line( data, i, [transparent_tile])
-
-            elif data[i] == special_tiles.white:
-                #stripe, i = pack_line( data, i, OTHERS + [WHITE], BLACK)
-                #stripe, i = pack_line( data, i, WHITE, [])
-                #stripe, i = pack_line_one_pixel_stop( data, i, WHITE, OTHERS, i+MAX_STRIPE_LENGTH )
-                stripe, i = super_pack_line( data, i, special_tiles.white)
-
-            elif data[i] == special_tiles.black:
-                #stripe, i = pack_line( data, i, OTHERS + [BLACK], WHITE)
-                #stripe, i = pack_line( data, i, BLACK, [])
-                #stripe, i = pack_line_one_pixel_stop( data, i, BLACK, OTHERS, i+MAX_STRIPE_LENGTH)
-                stripe, i = super_pack_line( data, i, special_tiles.black)
-
-            else:
-                #stripe, i = pack_line( data, i, OTHERS, [BLACK[0], WHITE[0]])
-                stripe, i = pack_line( data, i, others, 4)
-
-
-            all_stripes_codes.append( Stripe(stripe, special_tiles))
-
-    return all_stripes_codes
 
 # 95 = 01 01 11 11
 # pixels = [1,2]*20 + [3,0]*20 # 2 lines of 40 pixels each
@@ -910,7 +903,8 @@ else:
 OTHERS=list( range( BLACK + 1, WHITE))
 
 
-ffmpeg()
+
+
 
 
 white_stripes = dict()
@@ -1060,127 +1054,16 @@ def decompress_one_frame( all_stripes, stripe_ndx):
     return decompressed, used_stripes, stripe_ndx
 
 
-if os.name == 'nt':
-    IMG_PREFIX = 'c:/PORT-STC/PRIVATE/tmp'
-    FFMPEG = 'c:\PORT-STC\opt\ffmpeg-20181221-53d3a1c-win64-static\bin\ffmpeg -i bad_apple_original.mp4 -an  -vf fps=10,scale=36:46  c:\port-stc\private\tmp\bad_apple%05d.png'
-else:
-    IMG_PREFIX = '/tmp'
+def ffmpeg( force = False):
+    if force or not os.path.exists("{}/bad_apple00009.png".format(IMG_PREFIX)):
+        os.system("{} -i data/bad_apple_original.mp4 -an  -vf fps=10,scale={}:{}  {}/bad_apple%05d.png".format( FFMPEG, WIDTH, HEIGHT, IMG_PREFIX))
 
-for filename in sorted(glob.glob('{}/bad_apple0*.png'.format(IMG_PREFIX))):
 
-    if img_ndx < SKIP_PICTURES:
-        img_ndx += 1
-        continue
-
-    if img_ndx % 100 == 0:
-        print("{} ".format(img_ndx, end='\r', flush=True))
-
-    if img_ndx == MAX_PICTURES: # 139125
-        break
-
+def image_to_tiles( filename):
     img = Image.open(filename)
     data = img.convert('L').tobytes()
-    #data = [ int(3*round(x/256)) for x in data] # From grayscale to 1 bits per pixel
     data = [ int(round(3.499 * x /256)) for x in data] # From grayscale to 2 bits per pixel
-
-
-    # Testing appleize functions
-    # a_data = deappleize( appleize( data, WIDTH, HEIGHT), WIDTH, HEIGHT)
-    # assert data == a_data, "{} {}".format(data, a_data)
-    # TEsting pack4
-    # assert a_data == pack4_2_apple( apple_2_pack4( a_data)), "{}\n{}".format( pack4_2_apple( apple_2_pack4( a_data)), a_data)
-
-    packed_data = apple_2_pack4( appleize( data, WIDTH, HEIGHT))
-
-    # packed_data = []
-
-    # for l in range( 0, WIDTH*HEIGHT, PIXELS_PER_ROW):
-    #     pb = pack_bytes( data[l:l+PIXELS_PER_ROW])
-    #     assert len(pb) == BYTES_PER_ROW, "Got {}".format( str(pb))
-    #     packed_data.extend( pb)
-
-    # #packed_data = appleize( packed_data)
-    # assert len(packed_data) == BYTES_PER_FRAME, "Got {}, expected {}".format( len(packed_data), BYTES_PER_FRAME)
-
-    all_original_frames.append(packed_data)
-    packed_stream.extend( packed_data)
-
-    img_ndx += 1
-
-assert img_ndx >= 1, "No images found ?"
-
-replacements, tile_map = simplify_tiles( packed_stream)
-for n in range(len(packed_stream)):
-    packed_stream[n] = replacements[ packed_stream[n]]
-    assert packed_stream[n] < 128
-
-# print( tile_map)
-
-#stats = sorted( collections.Counter( packed_stream).items(), key=lambda p:p[1], reverse=True)
-
-# print("BLACK={}, WHITE={}, tranapernt={}".format( BLACK, WHITE, transparent_tile))
-
-class SpecialTiles:
-    def __init__( self, tile_map):
-        self.black = tile_map.inv[0]
-        self.white = tile_map.inv[255]
-        self.transparent = 0x7E
-
-        self.others = [x for x in range(self.transparent)]
-        self.others.remove( self.white)
-        self.others.remove( self.black)
-
-
-    def all(self):
-        return (self.black, self.white, self.transparent)
-
-
-special_tiles = SpecialTiles( tile_map)
-
-# stdscr = curses.initscr()
-# print_tiles_stats(1, stats)
-
-
-# for ndx in [0x78, 0xF8, 0x178, 0x1F8, 0x278, 0x2F8, 0x378, 0x3F8]:
-#     data[ (ndx //2) : (ndx // 2) + 4] = transparent_tile
-
-
-delta_frames = make_delta_frames_stream( packed_stream, special_tiles, 1024//2)
-all_stripes = make_stripes(delta_frames, special_tiles, 512)
-
-print("{} delta frames".format( len(delta_frames) // 512))
-
-unique_stripes = dict()
-stripe_id = 1
-for s in all_stripes:
-    h = hash(s)
-    if h not in unique_stripes:
-        unique_stripes[ h] = s
-        s.stripe_id = stripe_id
-        stripe_id += 1
-
-for i in range( len( all_stripes)):
-    all_stripes[i] = unique_stripes[ hash(all_stripes[i])]
-
-
-ndx = 0
-for s, freq in collections.Counter( all_stripes ).items():
-    s.frequency = freq
-    s.label = ndx
-    ndx += 1
-
-
-f1 = [s for s in filter( lambda s:s.frequency == 1, sorted( unique_stripes.values(), key=lambda s:s.frequency)) ]
-
-print( "{} length-1 stripes, totalling {} bytes".format( len(f1), sum( [ len(s.data) for s in f1 ])))
-#exit()
-
-# cum = 0
-# with open('freq.gplot', 'w') as fo:
-#     for s in sorted( unique_stripes.values(), key=lambda s:s.frequency):
-#         print("#{}\t{}x\t{}".format( s.label, s.frequency, len(s.data)))
-#         cum += s.frequency
-#         fo.write("{}\n".format( cum))
+    return apple_2_pack4( appleize( data, WIDTH, HEIGHT))
 
 
 def simple_lz77( all_stripes):
@@ -1218,127 +1101,121 @@ def simple_lz77( all_stripes):
 # 155296 : without d1, d2...
 # 153278 : with d1, d2...
 
-def simple_huffman( unique_stripes, all_stripes):
-    sid = 1
-
-    # Sort stripes, most frequent first
-
-    for s in sorted( unique_stripes.values(), key=lambda s:s.frequency, reverse=True):
-        s.stripe_id2 = sid
-        sid += 1
-
-    # for s in all_stripes[0:100]:
-    #     print("({},{})".format( s.stripe_id, s.stripe_id2 ))
-
-    stream = bitstring.BitArray()
-
-    d1 = (2 ** 3)
-    d2 = (2 ** 6) + d1
-    d3 = (2 ** 9) + d2
-
-    ndx = 0
-    for s in all_stripes:
-        sid = s.stripe_id2 - 1
-
-        if sid < d1:
-            # 0xxxb => 8 values
-            bits = bitstring.BitArray(length=4, uint=sid)
-        elif d1 <= sid < d2:
-            # 10yy yyyy => 64 values
-            bits = bitstring.BitArray(length=8, uint=0b10000000 + sid - d1)
-        elif d2 <= sid < d3:
-            # 110z zzzz zzzz 12 bits, 9 significant => 512 values
-            bits = bitstring.BitArray(length=12, uint=0b110000000000 + sid - d2)
-        elif d3 <= sid < 2 ** 13:
-            # 111z zzzz zzzz zzzz 16 bits, 13 significant => 8192 values
-            bits = bitstring.BitArray(length=16, uint=0b1110000000000000 + sid - d3)
-        else:
-            raise Exception("argh {}".format( sid))
-
-        if ndx < 300:
-            print("s# {} (b: {}) -> {} / {}".format( hex(ndx), len(stream.tobytes()), hex(bits.uint), sid))
-
-        stream.append( bits)
-        ndx += 1
-
-    print("Bit stream simple huffman : {} stripes, {} bits, {} bytes".format( len( all_stripes), len( stream), len(stream) // 8))
-
-    b = stream.tobytes()
-
-    # Allow some wrapping so that the ASM code is simpler
-    extra_bytes = 3
-
-
-    too_much = len(b) - MAX_DISK_SIZE
-
-    with open("compressed.a","w") as fo:
-        array_to_asm( fo, b[0:too_much + extra_bytes], '!byte')
-
-    with open("cstripes.dsk","bw") as fo:
-        fo.write( disk_2_dos( b[too_much:]))
-
-
-    # print("Some stripes:")
-    # for i in range(20):
-    #     print( '{:04} '.format(i*16) + ' '.join([ "${:04x}".format(s.stripe_id2) for s in all_stripes[i*16:(i+1)*16]]))
-
 
 
     return
 
-    # Test decompression
-
-    #print( hex_word([s.stripe_id2 for s in all_stripes[0:500]]))
-    #print( hex_byte( stream.tobytes()[0:1000]))
-
-    decomp_stream = []
-    max_l = len( stream)
-    ndx = 0
-    while ndx < max_l:
-        half_byte = stream[ndx:ndx+4].uint
-
-        if   half_byte & 0b1000 == 0:
-            s = half_byte
-
-        elif half_byte & 0b1100 == 0b1000:
-            s = (half_byte & 0b0011)
-            ndx += 4
-            s = (s << 4) + stream[ndx:ndx+4].uint
-            s += d1
-
-        elif half_byte & 0b1110 == 0b1100:
-            s = (half_byte & 0b0001)
-            #print( hex(s))
-            ndx += 4
-            s = (s << 4) + stream[ndx:ndx+4].uint
-            #print( hex(s))
-            ndx += 4
-            s = (s << 4) + stream[ndx:ndx+4].uint
-            #print( hex(s))
-            s += d2
-            #print( hex(d2))
-            #print( hex(s))
-
-        elif half_byte & 0b1110 == 0b1110:
-            s = (half_byte & 0b0001)
-            ndx += 4
-            s = (s << 4) + stream[ndx:ndx+4].uint
-            ndx += 4
-            s = (s << 4) + stream[ndx:ndx+4].uint
-            ndx += 4
-            s = (s << 4) + stream[ndx:ndx+4].uint
-            s += d3
-
-        decomp_stream.append(s)
-        ndx += 4
 
 
-    a = [s.stripe_id2 for s in all_stripes]
-    b = decomp_stream
 
-    for i in range( len(a)):
-        if a[i] != b[i]:
-            print(i)
+if not os.path.exists("{}/bad_apple00009.png".format(IMG_PREFIX)):
+    ffmpeg("-i data/bad_apple_original.mp4 -an  -vf fps=10,scale={}:{}  {}/bad_apple%05d.png".format(WIDTH, HEIGHT, IMG_PREFIX))
+
+for filename in sorted(glob.glob('{}/bad_apple0*.png'.format(IMG_PREFIX))):
+
+    if img_ndx < SKIP_PICTURES:
+        img_ndx += 1
+        continue
+
+    if img_ndx % 100 == 0:
+        print("{} ".format(img_ndx, end='\r', flush=True))
+
+    if img_ndx == MAX_PICTURES: # 139125
+        break
+
+    packed_data = image_to_tiles( filename)
+
+    # packed_data = []
+
+    # for l in range( 0, WIDTH*HEIGHT, PIXELS_PER_ROW):
+    #     pb = pack_bytes( data[l:l+PIXELS_PER_ROW])
+    #     assert len(pb) == BYTES_PER_ROW, "Got {}".format( str(pb))
+    #     packed_data.extend( pb)
+
+    # #packed_data = appleize( packed_data)
+    # assert len(packed_data) == BYTES_PER_FRAME, "Got {}, expected {}".format( len(packed_data), BYTES_PER_FRAME)
+
+    all_original_frames.append(packed_data)
+    packed_stream.extend( packed_data)
+
+    img_ndx += 1
+
+assert img_ndx >= 1, "No images found ?"
+
+replacements, tile_map = simplify_tiles( packed_stream)
+for n in range(len(packed_stream)):
+    packed_stream[n] = replacements[ packed_stream[n]]
+    assert packed_stream[n] < 128
+
+# print( tile_map)
+
+#stats = sorted( collections.Counter( packed_stream).items(), key=lambda p:p[1], reverse=True)
+
+# print("BLACK={}, WHITE={}, tranapernt={}".format( BLACK, WHITE, transparent_tile))
+
+class SpecialTiles:
+    def __init__( self, tile_map):
+        self.black = tile_map.inv[0]
+        self.white = tile_map.inv[255]
+        self.transparent = 0x7E # Must be < 0x80 and also != 0x7F because 0x7F | 0x80 == 0xFF which is a stop value
+
+        self.others = [x for x in range(self.transparent)]
+        self.others.remove( self.white)
+        self.others.remove( self.black)
+
+
+    def all(self):
+        return (self.black, self.white, self.transparent)
+
+
+special_tiles = SpecialTiles( tile_map)
+
+# stdscr = curses.initscr()
+# print_tiles_stats(1, stats)
+
+
+# for ndx in [0x78, 0xF8, 0x178, 0x1F8, 0x278, 0x2F8, 0x378, 0x3F8]:
+#     data[ (ndx //2) : (ndx // 2) + 4] = transparent_tile
+
+
+delta_frames = make_delta_frames_stream( packed_stream, special_tiles, 1024//2)
+all_stripes = make_stripes(delta_frames, special_tiles, 512, MAX_STRIPE_LENGTH)
+
+print("{} delta frames".format( len(delta_frames) // 512))
+
+unique_stripes = dict()
+stripe_id = 1
+for s in all_stripes:
+    h = hash(s)
+    if h not in unique_stripes:
+        unique_stripes[ h] = s
+        s.stripe_id = stripe_id
+        stripe_id += 1
+
+for i in range( len( all_stripes)):
+    all_stripes[i] = unique_stripes[ hash(all_stripes[i])]
+
+
+ndx = 0
+for s, freq in collections.Counter( all_stripes ).items():
+    s.frequency = freq
+    s.label = ndx
+    ndx += 1
+
+
+f1 = [s for s in filter( lambda s:s.frequency == 1, sorted( unique_stripes.values(), key=lambda s:s.frequency)) ]
+
+print( "{} length-1 stripes, totalling {} bytes".format( len(f1), sum( [ len(s.data) for s in f1 ])))
+#exit()
+
+# cum = 0
+# with open('freq.gplot', 'w') as fo:
+#     for s in sorted( unique_stripes.values(), key=lambda s:s.frequency):
+#         print("#{}\t{}x\t{}".format( s.label, s.frequency, len(s.data)))
+#         cum += s.frequency
+#         fo.write("{}\n".format( cum))
+
+
 
 
 simple_lz77( all_stripes)
