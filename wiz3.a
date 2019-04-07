@@ -169,6 +169,8 @@ NOCOMP	= 0
 compression = LZ		; LZ or NOCOMP
 TOTAL_FRAMES	= 2190		; Number of frames in the movie
 TRANSPARENT_TILE	= $7E
+VERTICAL_TILES = 20
+HORIZONTAL_TILES = 24
 
 
 GETLNZ 		= $FD67
@@ -176,6 +178,7 @@ GETLNZ_PROMPT 	= $33
 COUT     	= $FDED	; The Apple II character output func.
 GR_RAM	 	= $400
 GR2_RAM	 	= $800
+HGR_RAM		= $2000
 MLI		= $BF00
 SPKR		= $C030
 MOTOR_ON	= $C089
@@ -193,10 +196,11 @@ SECTORS_PER_TRACK 	= 16
 ; Zero page locations
 ; -------------------
 
-hgr_tile		= 224
+end_hgr_line_pointer  = 220
+hgr_tile		= 222
 pointer		    	= 224
 pointer2		= 226
-lo_hi_bits_reverse_ptr	= 226
+;; lo_hi_bits_reverse_ptr	= 226
 stripe_ptr		= 228
 tile_pointer		= 230
 stripe_index		= 232
@@ -215,7 +219,6 @@ screen_pointer	 	 = 246
 cmd_pointer	 	 = 248
 screen_line_ptr 	 = 250
 
-end_hgr_line_pointer  = 252
 screen_pointer_plus_one  = 252
 filler_ptr		 = 252
 dummy_ptr		= 254
@@ -237,10 +240,9 @@ buf              =        $44
 
 
 
-	*= $0C00
+	*= $4000
 
-
-
+	JMP zorglub
 	JMP main_start
 
 prodos_params:
@@ -275,65 +277,63 @@ hgr_tile_data:
 	!byte %00111110
 
 tiles_hgr:
-	!for i,4 {
-	!word hgr_tile_data + 0*8 - 1
-	!word hgr_tile_data + 1*8 - 1
-	!word hgr_tile_data + 2*8 - 1
-	!word hgr_tile_data + 3*8 - 1
+	!for i,127 {
+	!word tiles + (i-1)*8 - 1
 	}
 
 hgr_strip:
 	!byte 0,1,2,3,2,1,0,0,1,2,3,2,1,0,0,1,2,3,2,1,0,0,1,2,3,2,1,0,0,1,2,3,2,1,0
 
+	CENTERING = (40 - HORIZONTAL_TILES) >> 1
+
 hgr_lines_offsets:
 	!for i,8 {
-	!word $2000 + (i-1)*$80
+	!word HGR_RAM + (i-1)*$80 + CENTERING
 	}
 	!for i,8 {
-	!word $2028 + (i-1)*$80
+	!word HGR_RAM + $28 + (i-1)*$80  + CENTERING
 	}
 	!for i,8 {
-	!word $2050 + (i-1)*$80
+	!word HGR_RAM + $50 + (i-1)*$80  + CENTERING
 	}
 
 
 !macro setup_hgr_line_pointers {
 	;; Compute beginnig and end of the first line of the tile on the screen
-	CLC
 	LDA hgr_current_line	; From 0 to 23 (x8 to have pixels => 0-184)
-	ASL
+	ASL			; bit 7 shifted into carry; sinc evalue is small, carry is cleared
 	TAY
 	;; The hi-byte of count determines the line; the low byte gives offset in the line
 	LDA hgr_lines_offsets,Y
-	STA count1
+	STA screen_pointer
 	LDA hgr_lines_offsets + 1,Y
-	STA count1 + 1
+	STA screen_pointer + 1
+
 	;;  Compute the end of the line
 	LDA hgr_lines_offsets,Y
-	ADC #40			; 40*7 = 280 pixels
+	CLC			; FIXME useless
+	ADC #HORIZONTAL_TILES			; 40*7 = 280 pixels
 	STA end_hgr_line_pointer
 
 	}
 
 
-!macro advance_screen_pointers {
+!macro advance_screen_pointers_right {
+	!zone {
 	;;  Next tile (on screen)
 	clc
-	lda count1
+	lda screen_pointer
 	adc #1
+	sta screen_pointer
 
-.hgr_self_mod_end_line:
 	cmp end_hgr_line_pointer
 	bne .still_in_line
 	inc hgr_current_line
 
-	+setup_line_pointer
-
-	LDA hgr_lines_offsets,Y
+	+setup_hgr_line_pointers
 
 .still_in_line:
-	sta count1
-
+	}
 	}
 
 current_offset	!word $2020	;32
@@ -347,13 +347,17 @@ scount2		!byte 0
 main_start:
 
 	jsr set_hgr_mode
+	jsr clear_screen
+	jsr clear_hgr
 
+	lda #0
+	sta hgr_current_line
 	+store_16 stripe_ptr, hgr_strip
 	+setup_hgr_line_pointers
 
-	LDA count1
+	LDA screen_pointer
 	ADC #30
-	STA count1
+	STA screen_pointer
 
 	LDA #10+3
 	STA count3
@@ -362,45 +366,11 @@ main_start:
 	LDY count3
 	LDA (stripe_ptr),Y	; From tile number...
 	ASL
-	TAX
-	LDA tiles_hgr,X		; ...to tile pointer
-	STA .hgr_self_mod + 1
-	LDA tiles_hgr + 1,X
-	STA .hgr_self_mod + 1 + 1
 
-	ldx #8
-	ldy #0
-.hgr_tile_loop:
-.hgr_self_mod:
-	lda $FFFF,x		; 2 bytes load a line of the tile
-	sta (count1),Y		; 2 bytes show it on the screen
-	lda count1 + 1		; 2 bytes update the screen pointer (hi byte)
-	adc #4			; 2 bytes
-	sta count1 + 1		; 2 bytes
-	dex
-	bne .hgr_tile_loop
-	;; +store_16 lo_hi_bits_reverse_ptr, lo_hi_bits_reverse
+	LDA #$FF
+	JSR hgr_mono_tile_expander
+	;; JSR hgr_tile_expander
 
-	SEC
-	sbc #32			; revert tile bytes, then advance one tile to the right
-	sta count1 + 1
-
-	;;  Next tile (on screen)
-	clc
-	lda count1
-	adc #1
-
-.hgr_self_mod_end_line:
-	cmp end_hgr_line_pointer
-	bne .still_in_line
-	inc hgr_current_line
-
-	+setup_line_pointer
-
-	LDA hgr_lines_offsets,Y
-
-.still_in_line:
-	sta count1
 
 	DEC count3
 	BNE .hgr_tile_loop1
@@ -408,7 +378,10 @@ main_start:
 	JSR GETLNZ
 	JMP zorglub
 
-	;;  ---------------------------------------------------------------------
+
+
+
+;;  ---------------------------------------------------------------------
 
 	;;  Split stripe if necessary
 
@@ -442,6 +415,8 @@ no_split:
 	sta count2
 
 
+;;  ---------------------------------------------------------------------
+
 
 zorglub:
 	;; jsr load_current_stripe
@@ -469,17 +444,24 @@ zorglub:
 !if DRIVE_SELECT = 0 {
 	JSR GETLNZ
 }
-	JSR set_gr_mode
+	;; JSR set_gr_mode
 
+	lda #' '+$80
+	jsr clear_screen
+	jsr clear_hgr
+	jsr set_hgr_mode
 
-	LDA #0
-	JSR clear_screen
+	;; LDA #0
+	;; JSR clear_screen
 	JSR init_disk_read
 	JSR sector_zero
 
 
+	LDA #0
+	STA hgr_current_line
 
-	+store_16 screen_pointer, GR_RAM
+	+store_16 screen_pointer, HGR_RAM
+	+setup_hgr_line_pointers
 
 	jmp main_control
 
@@ -501,6 +483,7 @@ main_control:
 	LDA LC_RAM_SELECT
 
 	jsr copy_compressed
+	jsr preload_sectors
 
 
 .main_control_loop:
@@ -509,7 +492,7 @@ main_control:
 }
 	ldx #SLOT_SELECT
 	jsr rdadr16
-	bcs .main_control_loop
+	bcs .main_control_loop	 ; Cheap retry
 
 	;; From now on, time is ticking, we must do
 	;; as much as we can before the read latch
@@ -767,57 +750,74 @@ clear_read_status:
 
 ; ----------------------------------------------------------------------------
 
-!if DRAW_STATUS = 1 {
-draw_status:
+	!macro pixel {
+	CMP #1
+	BNE .not_read
+	LDA #'-' + $80
+	JMP .go_on
+.not_read:
+	LDA #'.' + $80
+.go_on:
 
+	}
+
+!if DRAW_STATUS = 1 {
+
+STATUS_BUFFER = $7D0	; $650
+STATUS_BUFFER2 = HGR_RAM  + $400
+STATUS_BUFFER3 = HGR_RAM  + $800
+
+
+draw_status:
 	;; Draw the track status
 
+	lda #0
 	ldy #0
 draw_status0:
-	LDA track_status, Y
-	STA 2000,Y
-
-	LDA track_status + SECTORS_PER_TRACK, Y
-	ASL
-	ASL
-	ASL
-	ASL
-	ORA 2000,Y
-	STA 2000,Y
+	LDA track_status, Y	; 0 or 1
+	+pixel
+	STA STATUS_BUFFER,Y
 
 	INY
-	CPY #SECTORS_PER_TRACK
+	CPY #SECTORS_PER_TRACK*2
 	BNE draw_status0
+
+
+	LDA #' ' + $80
+draw_status1:
+	STA STATUS_BUFFER, Y
+	INY
+	CPY #40
+	BNE draw_status1
 
 	;;  Draw the memory pointer
 
-	LDX #$05
+
 	LDA pointer+1
 	SEC
 	SBC #TRACK_DATA_BANK
-	CMP #16
-	BMI .zorg
 
-	SEC
-	SBC #16
-	LDX #$50
-.zorg:
 	TAY
-	TXA
-	ORA 2000,Y
-	STA 2000,Y
+	LDA #$0D		; M inverse
+	;; ORA STATUS_BUFFER2,Y
+	STA STATUS_BUFFER,Y
 
 	;; Draw the disk head
 
-	ldy sect
-	lda #$66
-	sta 2000,Y
+	lda sect
+	clc
+	adc track_buffer
+	tay
+	lda STATUS_BUFFER,Y
+	and #$7F		; flashing
+	sta STATUS_BUFFER,Y
 
 	;; Draw the skipped sectors
 
-	ldy sectors_passed
-	lda #$ff
-	sta 2000,Y
+	;; lda sectors_passed
+	;; tay
+	;; lda #%01110101
+	;; sta STATUS_BUFFER3,Y
 	RTS
 }
 
@@ -855,14 +855,21 @@ process_a_frame_loop2:
 	BCS .end2
 	JSR draw_a_stripe
 
+;; !if compression != LZ {
+
 	LDA #2
 	+add_a_to_16 stripe_index
-
+;; }
 	; Reached the end of screen ?
 
-	LDA #>(GR_RAM + $200)
-	CMP screen_pointer+1
-	BNE process_a_frame_loop2
+
+	LDA hgr_current_line
+	CMP #(VERTICAL_TILES / 2)
+	BMI process_a_frame_loop2
+
+	;; LDA #>(HGR_RAM + $2000)
+	;; CMP screen_pointer+1
+	;; BNE process_a_frame_loop2
 	inc half_frame
 .end2:
 	rts
@@ -878,15 +885,25 @@ process_a_frame_loop:
 
 	; Reached the end of screen ?
 
-	LDA #>(GR_RAM + $400)
-	CMP screen_pointer+1
-	BNE process_a_frame_loop
+	LDA hgr_current_line
+	CMP #(VERTICAL_TILES)
+	BMI process_a_frame_loop
+
+	;; LDA #>(HGR_RAM + $2000)
+	;; CMP screen_pointer+1
+	;; BNE process_a_frame_loop
 
 	;;  Yep, reached. So we reset.
 
-	+store_16 screen_pointer, GR_RAM
+	LDA #0
+	STA hgr_current_line
+	+store_16 screen_pointer, HGR_RAM
+	+setup_hgr_line_pointers
+
 	inc half_frame
 	+inc16 frame_number
+.freeze:
+	;; JMP .freeze
 
 .end:
 	RTS
@@ -923,6 +940,9 @@ load_current_stripe:
 
 !if compression = LZ {
 	jsr read_bits
+
+	;; data contains the stripe *number*
+
 	clc
 	rol data
 	rol data + 1
@@ -930,6 +950,8 @@ load_current_stripe:
 	sta stripe_ptr
 	lda data+1
 	sta stripe_ptr+1
+
+	;; stripe_ptr == stripe number * 2
 } else {
 	LDY #0
 	LDA (stripe_index),Y
@@ -1018,9 +1040,9 @@ a_save	!byte 0
 .loop:
 	lda $F000,X
 	sta ($F0),Y
-	lda count1
+	lda screen_pointer
 	adc #$4
-	sta count1
+	sta screen_pointer
 	dex
 	bne .loop
 
@@ -1030,7 +1052,7 @@ a_save	!byte 0
 
 	}
 
-				; -----------------------------------------------------------------------------
+; -----------------------------------------------------------------------------
 
 draw_a_stripe:
 	LDY #0									; 3 c
@@ -1041,6 +1063,7 @@ draw_a_stripe:
 	BPL tile_copy								; 2+ c
 	BEQ tile_copy								; 2+ c
 
+	;; 5D -> 0101 1101
        	AND #%11100000								; 2 c
        	CMP #%00000000								; 2 c
        	BEQ fill_white								; 2+ c
@@ -1053,7 +1076,8 @@ done_rle:
 	RTS									; 6 c => total 37 +? 5
 
 tile_copy:
-; FIXME reuse Acc from test above
+
+	; FIXME reuse Acc from test above (it's acount)
   	TAX									; 2 c
 
 	LDY #1	; peek one byte further.					; 2 c
@@ -1074,7 +1098,10 @@ two_tiles_at_least:
 	; First tile is special case because it has a flag on it.
 
 	TXA									; 2 c
-	JSR tile_expand								; 6 c
+
+	;; JSR tile_expand								; 6 c
+	JSR hgr_tile_expander
+
 	+inc16 cmd_pointer							; 12/15 c
 
 tile_copy_loop:
@@ -1085,7 +1112,9 @@ tile_copy_loop:
 	AND #$80								; 2 c
 	BNE last_tile_copy							; 2+ c
 
-	JSR tile_expand								; 6 c => 17 or 40
+	TXA
+	;; JSR tile_expand								; 6 c => 17 or 40
+	JSR hgr_tile_expander
 
 	+inc16 cmd_pointer							; 12/15 c
 	JMP tile_copy_loop							; 4 => n * (28+ +6 +17/40 + 12/15) => n * (63 +? 26) for two_tiles_at_least
@@ -1096,11 +1125,12 @@ last_tile_copy:
 	TXA        	; remember data byte2 c
 	AND #127	    ; remove last tile flag				; 2 c
 
-	JSR tile_expand	      	     	       					; 6 c
+	;; JSR tile_expand	      	     	       					; 6 c
+	JSR hgr_tile_expander
 	+inc16 cmd_pointer							; 12/15
 
-	TYA    									; 2 c
-	+add_a_to_16 screen_pointer						; 16 c
+	;; TYA    									; 2 c
+	;; +add_a_to_16 screen_pointer						; 16 c
 	RTS	     								; 6 c
 
 
@@ -1113,10 +1143,25 @@ fill_black:
 	JMP fill_row_plus_byte
 
 fill_transparent:
-	;LDX #$CC	; green
-	;JMP fill_row_plus_byte
 
-	JMP add_last_byte
+	LDA command_byte   ; 3 c
+	AND #%00011111	; How many bytes to copy (not counting the extra data byte)	; 2 c
+	CLC 		      	   	    	      	       	   	      		; 2 c
+	ADC #1 		; 0 based coutn to 1 based count (0 means 1 pixel)		; 2 c
+	TAY		  	      	      	   	       				; 2 c
+
+transpa_loop:
+
+	sty y_save
+	+advance_screen_pointers_right
+	ldy y_save
+	dey
+       	BNE transpa_loop								; 2 or 3 c => loop total n*19-1 cycles
+	jmp add_last_byte
+
+
+	;; LDX #$0F	; green
+	;; JMP add_last_byte
 
 
 
@@ -1131,38 +1176,42 @@ fill_row_plus_byte:
 	AND #%00011111	; How many bytes to copy (not counting the extra data byte)	; 2 c
 	CLC 		      	   	    	      	       	   	      		; 2 c
 	ADC #1 		; 0 based coutn to 1 based count (0 means 1 pixel)		; 2 c
-	ASL 		; counter * 2 because each byte is 2x2 pixels			; 2 c
+	;; ASL 		; counter * 2 because each tile is 2x2 pixels			; 2 c
 	TAY		  	      	      	   	       				; 2 c
 
 	TXA		; Remember the color						; 2 c => Total 12 cycles
 fill_black_or_white:
 
-	;; +hgr_fill
-	;; +hgr_fill
+	sty y_save
+	JSR hgr_mono_tile_expander
+	ldy y_save
+	dey
 
-	DEY										; 2 cycles
-       	STA (screen_pointer),Y								; 6 cycles
-	DEY 										; 2 c
-       	STA (screen_pointer),Y								; 6 c
+	;; DEY										; 2 cycles
+       	;; STA (screen_pointer),Y								; 6 cycles
+	;; DEY 										; 2 c
+       	;; STA (screen_pointer),Y								; 6 c
+
        	BNE fill_black_or_white								; 2 or 3 c => loop total n*19-1 cycles
 
 
 add_last_byte:
 	LDA command_byte								; 2 c
 	AND #%00011111	; How many compressed bytes to load				; 2 c
-	ASL 		; each compressed byte will give two bytes in video ram		; 2 c
-	ADC #2		; (carry cleared by ASL because hi bit is always zero) 0-based							; 2 c
+	;; ASL 		; each compressed byte will give two bytes in video ram		; 2 c
+	;; ADC #2		; (carry cleared by ASL because hi bit is always zero) 0-based							; 2 c
 
-	+add_a_to_16 screen_pointer	      ; screen_pointer += counter + 1		; 16 c
+	;; +add_a_to_16 screen_pointer	      ; screen_pointer += counter + 1		; 16 c
 
 	LDY #1										; 2 c
 	LDA (cmd_pointer),Y	; Load data byte					; 5 c
 
 	LDY #0 ; screen pointer is at right position					; 2 c
-	JSR tile_expand		      	    						; 6 c + (17 or 40)
+	;; JSR tile_expand		      	    						; 6 c + (17 or 40)
+	JSR hgr_tile_expander
 
-	LDA #2										; 2 c
-	+add_a_to_16 screen_pointer	; skip the tile we've just written		; 16 c
+	;; LDA #2										; 2 c
+	;; +add_a_to_16 screen_pointer	; skip the tile we've just written		; 16 c
 	LDA #2										; 2 c
 	+add_a_to_16 cmd_pointer	; Skip cmd byte and data byte			; 16 c
        	RTS	     			       	   	    	 			; 6 c => add_last_byte = 83 + (17 or 40)
@@ -1170,6 +1219,80 @@ add_last_byte:
 											; fill_row_plus_one_byte : 12 + (n*19-1) + 83 + (17 or 40) = 111 + 19*n +? 23
 
 ; ------------------------------------------------------------------------------
+
+
+
+;;  ---------------------------------------------------------------------
+
+hgr_mono_tile_expander:
+	!zone {
+
+	STA hgr_self_mod + 1
+
+	ldx #8			; Tile height
+	ldy #0
+hgr_tile_loop:
+hgr_self_mod:
+	lda #$FF		; 2 bytes load a line of the tile
+	sta (screen_pointer),Y		; 2 bytes show it on the screen
+	lda screen_pointer + 1		; 2 bytes update the screen pointer (hi byte)
+	clc				; FIXME not needed
+	adc #4			; 2 bytes to the next line
+	sta screen_pointer + 1		; 2 bytes
+	dex
+	bne hgr_tile_loop
+	;; +store_16 lo_hi_bits_reverse_ptr, lo_hi_bits_reverse
+
+	SEC
+	sbc #32			; revert tile bytes, then advance one tile to the right
+	sta screen_pointer + 1
+
+	+advance_screen_pointers_right
+
+	LDA hgr_self_mod + 1
+
+	rts
+	}
+
+;;  ---------------------------------------------------------------------
+
+hgr_tile_expander:
+	!zone {
+
+	AND #$7F
+	CMP #TRANSPARENT_TILE
+	BEQ transparent
+
+	ASL			; x 2
+	TAX
+	LDA tiles_hgr,X		; ...to tile pointer
+	STA .hgr_self_mod + 1
+	LDA tiles_hgr + 1,X
+	STA .hgr_self_mod + 1 + 1
+
+	ldx #8			; Tile height
+	ldy #0
+.hgr_tile_loop:
+.hgr_self_mod:
+	lda $FFFF,x		; 2 bytes load a line of the tile
+	sta (screen_pointer),Y		; 2 bytes show it on the screen
+	lda screen_pointer + 1		; 2 bytes update the screen pointer (hi byte)
+	clc				; FIXME not needed
+	adc #4			; 2 bytes
+	sta screen_pointer + 1		; 2 bytes
+	dex
+	bne .hgr_tile_loop
+	;; +store_16 lo_hi_bits_reverse_ptr, lo_hi_bits_reverse
+
+	SEC
+	sbc #32			; revert tile bytes, then advance one tile to the right
+	sta screen_pointer + 1
+transparent:
+	+advance_screen_pointers_right
+	}
+	rts
+
+
 
 tile_expand:
 	AND #127	; A = tile number						; 2 c
@@ -1288,10 +1411,10 @@ donepln:
 ; ------------------------------------------------------------------------------
 set_hgr_mode:
 	; set GR mode, full screen
-	LDA $C052
+	LDA $C053		; mix text and gfx (c052 = full text/gfx)
 	LDA $C054
 	LDA $C057
-	LDA $C050 ; last for cleaner mode change (according to Apple doc)
+	LDA $C050 ; display graphics; last for cleaner mode change (according to Apple doc)
 	RTS
 
 set_gr_mode:
@@ -1316,6 +1439,24 @@ clear_screen1:
 	DEX
 	CPX #$FF
 	BNE clear_screen1
+	RTS
+
+clear_hgr:
+	+store_16 screen_pointer, HGR_RAM + $2000 - 1
+clear_hgr_loop:
+	LDA #0
+	LDY #0
+	STA (screen_pointer), Y
+
+	+dec16 screen_pointer
+
+	lda #$20
+	cmp screen_pointer + 1
+	bne clear_hgr_loop
+	lda #0
+	cmp screen_pointer
+	bne clear_hgr_loop
+
 	RTS
 
 ; =============================================================================
@@ -2408,18 +2549,32 @@ copy_compressed:
 	bne .loop
 
 
-	lda #SECTORS_PER_TRACK
+	+store_16 pointer, disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR - 1 + 3 - (end_compressed - compressed) + 1
+
+
+	; Current track buffer to read sectors to
+	lda #0
 	sta track_buffer
 
- 	lda #0
+ 	lda #SECTORS_PER_TRACK
  	sta sectors_to_read
 
-	+store_16 pointer, disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR - 1 + 3 - (end_compressed - compressed) + 1
+	!zone {
+
+	lda #0			; sector is marked as read
+	ldy #0
+.loop:
+	sta track_status,y
+	iny
+	cpy #SECTORS_PER_TRACK
+	bne .loop
+	}
+
 
 	!zone {
 
 	lda #1			; sector is marked as read
-	ldy #0
+	ldy #SECTORS_PER_TRACK
 .loop:
 	sta track_status,y
 	iny
@@ -2428,12 +2583,33 @@ copy_compressed:
 	}
 	rts
 
-;; lo_hi_bits_reverse:
-;; 	!for i, 256 {
-;; 	!byte (((i-1) << 4) & $F0) + (((i-1) >> 4) & $0F)
-;; 	}
+
+preload_sectors:
+	!zone {
+	LDA #SECTORS_PER_TRACK
+	STA count1
+
+.loop:
+!if DRAW_STATUS = 1 {
+	jsr draw_status
+}
+	ldx #SLOT_SELECT
+	jsr rdadr16
+	bcs .loop	 ; Cheap retry
+
+	jsr read_sector_if_necessary
+
+	DEC count1
+	BNE .loop
+	}
+	RTS
+
+
 
 	!src "data.a"
+
+
+	;; !src "data.a"
 
 msg	!byte    $0D,$0D,$0D,$0D,$0D,$0D,$0D,$0D,$0D
    	!text    "----------------------------------------", $0D

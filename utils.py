@@ -16,6 +16,7 @@ else:
     IMG_PREFIX = '/tmp'
     FFMPEG = 'ffmpeg'
 
+DISK_SIZE = 143360
 
 class SpecialTiles:
     def __init__( self, black, white, transparent):
@@ -149,6 +150,7 @@ class Stripe:
             assert len(values) > 2, "shorter run should be compressed differently"
             assert values[i] == values[0], "this is not a run of bytes that are all the same"
             assert i in (len(values)-1, len(values)-2), "{} not in {}".format( i, (len(values)-2, len(values)-1))
+            assert len(values) - 1 - 1 < 2 ** 5
 
             # -1 because the last tile is put apart, -1 because the cnt of repetition is never 0 (so we save 1 increment)
             repeat_byte = cmd | (len(values) - 1 - 1)
@@ -352,6 +354,29 @@ def hex_byte(b_or_list, prefix="!byte "):
     else:
         return '$'+format(b_or_list,'02X')
 
+
+def array_to_asm( fo, a, line_prefix, label = ""):
+
+    if type(a[0]) == str:
+        fmt = "{}"
+    elif line_prefix == '!word':
+        fmt = "${:04x}"
+    elif line_prefix == '!byte':
+        fmt = "${:02x}"
+    else:
+        raise Exception("Unknown format {}".format( line_prefix))
+
+    if label:
+        label = "\t{}:".format(label)
+    else:
+        label = ""
+
+    fo.write("{}; {} values\n".format(label, len(a)))
+    for i in range( 0, len( a), 10):
+        end = min( i + 10, len( a))
+        fo.write("\t{} {}\n".format( line_prefix, ", ".join( [ fmt.format(x) for x in a[i:end]])))
+
+
 def stats_unique_stipes( unique_stripes):
     print("{} unique stripes, stored with {} bytes, representing {} stripes".format(
         len(unique_stripes),
@@ -433,26 +458,34 @@ def simple_huffman( unique_stripes, all_stripes):
         print("Too many stripes for the compressor ! (8192) {}".format( len(unique_stripes)))
 
     print("{} * 4 bits for {} bytes, {} * 8 bits for {} bytes, {} * 12 bits for {} bytes, {} * 16 bits for {} bytes".format(d1_count,d1_len,d2_count,d2_len,d3_count,d3_len,d4_count,d4_len))
-    print("Bit stream simple huffman : {} stripes, {} bits, {} bytes".format( len( all_stripes), len( stream), len(stream) // 8))
-
     b = stream.tobytes()
+    print("Bit stream simple huffman : {} stripes, {} bits, {} bytes".format( len( all_stripes), len( stream), len(b)))
+
 
     # Allow some wrapping so that the ASM code is simpler
     extra_bytes = 3
 
 
-    # too_much = len(b) - MAX_DISK_SIZE
+    too_much = len(b) - DISK_SIZE
 
-    # with open("compressed.a","w") as fo:
-    #     array_to_asm( fo, b[0:too_much + extra_bytes], '!byte')
+    MAX = 1024
 
-    # with open("cstripes.dsk","bw") as fo:
-    #     fo.write( disk_2_dos( b[too_much:]))
+    if too_much <= 0:
+        too_much = MAX
+
+    if too_much > MAX:
+        too_much = MAX
+
+    with open("compressed.a","w") as fo:
+        array_to_asm( fo, b[0:too_much + extra_bytes], '!byte')
+
+    with open("cstripes.dsk","bw") as fo:
+        fo.write( disk_2_dos( b[too_much:]))
 
 
-    # print("Some stripes:")
-    # for i in range(20):
-    #     print( '{:04} '.format(i*16) + ' '.join([ "${:04x}".format(s.stripe_id2) for s in all_stripes[i*16:(i+1)*16]]))
+    print("Some stripes:")
+    for i in range(20):
+        print( '{:04} '.format(i*16) + ' '.join([ "${:04x}".format(s.stripe_id2 - 1) for s in all_stripes[i*16:(i+1)*16]]))
 
 
 
@@ -512,3 +545,70 @@ def simple_huffman( unique_stripes, all_stripes):
     for i in range( len(a)):
         if a[i] != b[i]:
             print(i)
+
+
+
+def unique_stripes_to_asm( fo, unique_stripes):
+    def stripe_id(stripe):
+        return stripe.stripe_id2
+
+    sorted_stripes = sorted( unique_stripes.values(), key=stripe_id)
+    fo.write('\n')
+    for s in sorted_stripes:
+        fo.write("stripe{}\t{}\t; [${:X}] {}\n".format( stripe_id(s), hex_byte(s.compressed), stripe_id(s) - 1, hex_byte(s.data, '')))
+
+    fo.write('stripes_indices:\n')
+    array_to_asm( fo, ["stripe{}".format( stripe_id(s)) for s in sorted_stripes], "!word")
+
+
+def stripes_to_disk( stripes):
+
+    disk = bytearray()
+
+    for s in stripes[0:min( (len(stripes) // 2) - 1, (DISK_SIZE//2) - 1)]:
+        sid = (s.stripe_id2 - 1) * 2
+        assert sid < 65536
+        disk.append( sid & 0xFF)
+        disk.append( sid >> 8)
+
+    disk.append( 0xFF)
+    disk.append( 0xFF)
+    #disk.extend( bytearray( 143360 - len(disk)))
+
+    with open("stripes.dsk","bw") as fo:
+        fo.write( disk_2_dos( disk))
+
+
+
+def disk_2_dos( disk):
+
+    disk = bytearray( disk)
+
+    dos_sector= [0x0, 0xd, 0xb, 0x9, 0x7, 0x5, 0x3, 0x1,
+                 0xe, 0xc, 0xa, 0x8, 0x6, 0x4, 0x2, 0xf]
+
+    dos_sector= [0x0, 0x7, 0xe, 0x6, 0xd, 0x5, 0xc, 0x4,
+                 0xb, 0x3, 0xa, 0x2, 0x9, 0x1, 0x8, 0xf]
+
+
+    if len(disk) > DISK_SIZE:
+        print("Disk image too big by {} bytes, truncating...".format(len(disk) - DISK_SIZE))
+        disk = disk[0:DISK_SIZE]
+    elif len(disk) < DISK_SIZE:
+        print("Disk image too small ({}), extending to disk size...".format(len(disk)))
+        disk.extend( bytearray( DISK_SIZE - len(disk)))
+    else:
+        print("disk_2_dos : putting {} bytes on a disk of {}".format(len(disk), DISK_SIZE))
+
+    # dos_sector = list( range( 16))
+    disk_dos = bytearray( DISK_SIZE)
+
+    for track in range(35):
+        for sector in range(16):
+            track_offset = track * 16 * 256
+
+            dos_ofs = track_offset + dos_sector[sector]*256
+            dsk_ofs = track_offset + sector*256
+            disk_dos[ dos_ofs:dos_ofs+256] =  disk[ dsk_ofs:dsk_ofs+256] # [sector for i in range(256)]
+
+    return disk_dos

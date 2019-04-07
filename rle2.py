@@ -1333,7 +1333,6 @@ with open("data.a","w") as fo:
     #     fo.write("\t!word {}\n".format( ",".join( ["stripe{}".format(s.stripe_id) for s in all_stripes[i:end]])))
 
 
-stripes_to_disk( all_stripes)
 
 if 0:
     stdscr = curses.initscr()
