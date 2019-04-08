@@ -471,7 +471,7 @@ zorglub:
 TRACK_DATA_BANK = disk_buffers_base >> 8
 TRACK_DATA_BANK_OUT = (disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR) >> 8
 
-stay_on_first_track	!byte 1
+stay_on_first_track	!byte 0
 read_disk_delay !byte 0
 track_buffer	!byte 0 ; (0 or 16) Track buffer being read into
 track_status !fill SECTORS_PER_TRACK*2,0
@@ -482,8 +482,8 @@ main_control:
 	LDA LC_RAM_SELECT
 	LDA LC_RAM_SELECT
 
-	jsr copy_compressed
 	jsr preload_sectors
+	jsr copy_compressed
 
 
 .main_control_loop:
@@ -763,8 +763,8 @@ clear_read_status:
 
 !if DRAW_STATUS = 1 {
 
-STATUS_BUFFER = $7D0	; $650
-STATUS_BUFFER2 = HGR_RAM  + $400
+STATUS_BUFFER = $7D0	; $750 $650
+STATUS_BUFFER2 = $750
 STATUS_BUFFER3 = HGR_RAM  + $800
 
 
@@ -789,6 +789,25 @@ draw_status1:
 	INY
 	CPY #40
 	BNE draw_status1
+
+
+	LDY #0
+draw_status2:
+	TYA
+	CMP #10
+	BMI under10
+	CLC
+	ADC #'A'+$80 - 10
+	jmp hexband
+under10:
+	CLC
+	ADC #'0'+$80
+hexband:
+	STA STATUS_BUFFER2, Y
+	INY
+	CPY #SECTORS_PER_TRACK
+	BNE draw_status2
+
 
 	;;  Draw the memory pointer
 
@@ -1442,13 +1461,14 @@ clear_screen1:
 	RTS
 
 clear_hgr:
-	+store_16 screen_pointer, HGR_RAM + $2000 - 1
+	+store_16 screen_pointer, HGR_RAM + $2000
 clear_hgr_loop:
+	+dec16 screen_pointer
+
 	LDA #0
 	LDY #0
 	STA (screen_pointer), Y
 
-	+dec16 screen_pointer
 
 	lda #$20
 	cmp screen_pointer + 1
@@ -2574,7 +2594,6 @@ copy_compressed:
 	!zone {
 
 	lda #1			; sector is marked as read
-	ldy #SECTORS_PER_TRACK
 .loop:
 	sta track_status,y
 	iny
