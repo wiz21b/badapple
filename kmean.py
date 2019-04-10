@@ -1,4 +1,10 @@
 """
+Mmeory banks :
+
+0C00 - 2000 : 4096+1024 = 5k
+4000 - C000 : 4096*9 = 36k
+
+pure code ; <= 4K; data = (31-4) = 27kb
 
 FF7 : process_a_frame_loop2:
 1077 : load_current_stripe
@@ -51,7 +57,7 @@ TILE_SIZE = 8 # square tiles of NxN pixels
 WIDTH = 24
 HEIGHT = 20
 
-IMG_FROM_TO = 00,1000
+IMG_FROM_TO = 00,10000
 
 COLORS = 2
 
