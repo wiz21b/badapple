@@ -1,4 +1,5 @@
-import utils
+import sys
+from utils import *
 
 # 0,1,2 logical
 # 0000,0700,0e00, ?, $7700, $7600, ?, $7400
@@ -13,6 +14,11 @@ import utils
 # 0600 : 00 00 00 00
 # 0700 : 00 00 00 00
 # 0800 : 00 00 03 00 f3 41...    0B00
+
+DISK_SIZE = 143360
+# Allow some wrapping so that the ASM code is simpler
+extra_bytes = 3
+
 DOS_ORDER    = [0x0, 0x7, 0xe, 0x6, 0xd, 0x5, 0xc, 0x4,
                 0xb, 0x3, 0xa, 0x2, 0x9, 0x1, 0x8, 0xf]
 
@@ -23,8 +29,35 @@ PRODOS_ORDER = [0x0, 0x8, 0x1, 0x9, 0x2, 0xa, 0x3, 0xb,
 
 REV_PRODOS = [ PRODOS_ORDER.index(i) for i in range(16)]
 
+def fit_in_disk( a : bytearray):
+    if len( a) < DISK_SIZE:
+        # Pad with zeros
+        a.extend( bytearray(  DISK_SIZE - len( a)))
+        return a
+    elif len( a) > DISK_SIZE:
+        return a[0:DISK_SIZE]
+    else:
+        return a
+
+def at_page( a : bytearray):
+
+    if type(a) != bytearray:
+        a = bytearray(a)
+
+    if len(a) % 256:
+        a.extend( bytearray( 256 - (len(a) % 256)))
+    return a
+
+def offset_to_track_sector( o):
+    assert 0 <= o <= DISK_SIZE
+
+    t = (o // 256) // 16
+    s = (o // 256) % 16
+    return t,s
 
 def reorder_disk( org_disk : bytearray, sector_order):
+    assert len(org_disk) == 143360, "Expected something else than {}".format(len(org_disk))
+
     generic_disk = bytearray(143360)
 
     for track in range(35):
@@ -37,44 +70,77 @@ def reorder_disk( org_disk : bytearray, sector_order):
     return generic_disk
 
 
+b_mem = []
+
+print( sys.argv)
 
 with open('STARTUP','rb') as fi:
     f = fi.read(65536)
 
-    code = f[0:4096]
+    if sys.argv[1] == 'cut':
+        code = f[0: f.index('DATADATA'.encode('ASCII')) +1]
+        assert len(code) < 0x2000 - 0xC00, "Code starting at C00 won't fit in memory"
+        print("Code is {} bytes long".format( len( code)))
+        with open('WIZ4','wb') as fo:
+            fo.write( code)
 
-    data = f[(0x4000 - 0xC00):]
+    data = at_page( f[(0x4000 - 0xC00):])
 
     print("Data start at ${:X}, len={}".format(0x4000 - 0xC00, len(data)))
 
-    with open('WIZ4','wb') as fo:
-        fo.write( code)
 
-    with open('BADATA','wb') as fo:
-        fo.write( data)
+with open("cstripes.data", "rb") as fi:
+    b = bytearray( fi.read(200000))
+
+    if len(b) > DISK_SIZE:
+        print("Need additional RAM to fit stream data : {} bytes".format(len(b)-DISK_SIZE))
+        too_much = min( 4096, len(b)-DISK_SIZE)
+
+        if too_much % 256:
+            too_much = ((too_much // 256) + 1) * 256
+
+        # Cut bytes at the beginning of the stream
+
+        b_mem = bytearray()
+        b_mem.extend( b[ 0 : too_much])
+
+        extra = bytearray(256)
+        extra[0:extra_bytes] = b[ too_much : too_much + extra_bytes]
+        b_mem.extend( extra)
+
+        b_disk = fit_in_disk( b[too_much : ])
+
+    else:
+        b_disk = b
+        b_mem = []
+
+    print("Writing cstripes.dsk")
+    with open("cstripes.dsk","bw") as fo:
+        fo.write( reorder_disk( b_disk, DOS_ORDER))
 
 
-print("Reading NEW.DSK")
-with open( 'NEW.DSK','rb') as fi:
-    orig = bytearray( fi.read())
-    disk = reorder_disk( orig, REV_DOS)
+if sys.argv[1] == 'disk':
+    print("Reading NEW.DSK")
+    with open( 'NEW.DSK','rb') as fi:
+        orig = bytearray( fi.read())
+        disk = reorder_disk( orig, REV_DOS)
 
-    s = len(data) // 256
-    if len(data) % 256 != 0:
-        s += 1
+        print("stripes dictionary = {} bytes ({} sectors); data from disk = {} bytes ({} sectors)".format( len(data), len(data)//256, len(b_mem), len(b_mem)//256))
 
-    t = s // 16
-    if s % 16 != 0:
-        t += 1
+        assert len(data) % 256 == 0
+        assert len(b_mem) % 256 == 0
 
-    ofs = (35 - t)*256*16
+        print("stripes data : {}".format( hex_byte( list( data[0:64]))))
+        print("disk data    : {}".format( hex_byte( list( b_mem[0:64]))))
 
-    print("Data starts on track {}, it is {} sectors long".format(35-t, s))
+        disk[ DISK_SIZE - (len(data) + len(b_mem)): DISK_SIZE] = (data + b_mem)[:]
 
-    disk[ ofs:ofs+len(data) ] = data[:]
+        print( offset_to_track_sector(DISK_SIZE - (len(data) + len(b_mem))))
+        print( offset_to_track_sector(DISK_SIZE - (len(b_mem))))
 
-    disk2 = reorder_disk( disk, DOS_ORDER)
 
-    print("Writing NEW2.DSK")
-    with open( 'NEW2.DSK','wb') as fo:
-        fo.write(disk2)
+        disk2 = reorder_disk( disk, DOS_ORDER)
+
+        print("Writing NEW2.DSK")
+        with open( 'NEW2.DSK','wb') as fo:
+            fo.write(disk2)

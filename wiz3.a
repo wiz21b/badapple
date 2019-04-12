@@ -130,6 +130,10 @@
 	sta .target + 1
 }
 
+!macro store_8 .target, .const {
+	lda #.const
+	sta .target
+}
 
 ; 16 bit word := 16 bit word - 16 bit const
 !macro sub_const_from_16 .target, .const {
@@ -182,7 +186,8 @@ HGR_RAM		= $2000
 MLI		= $BF00
 SPKR		= $C030
 MOTOR_ON	= $C089
-DRV_SLCT	= $C08B
+DRV_ENABLE	= $C08A		; Select drive 1
+DRV2_SLCT	= $C08B		; Select drive 2
 LC_RAM_SELECT	= $C08B
 
 DRIVE_SELECT	= $80	; 0 == drive 1; $80 = drive 2
@@ -227,7 +232,7 @@ dummy_ptr		= 254
 
 ; Other constants
 
-disk_buffers_base	= $DF00	; you'll need 64kb RAM to do that (language card!)
+disk_buffers_base	= $DE00	; you'll need 64kb RAM to do that (language card!)
 
 ; Prodos stuff
 
@@ -243,14 +248,43 @@ buf              =        $44
 
 	*= $C00
 
-	jsr read_sect
-	bcc zgood
 
-	lda #$FF
-	sta $4000
-	lda #$EE
-	sta $4001
-	rts
+
+
+
+
+
+	+store_8 rs_sectors_to_read, 100
+	+store_8 target_track, 27
+	+store_8 target_sector, 15
+	+store_8 target_bank, $40
+	jsr read_sect
+
+	LDA #(' '+$80)
+	JSR clear_screen
+	+writeln msg
+	LDA #('>' + $80)
+	STA GETLNZ_PROMPT
+!if DRIVE_SELECT = 0 {
+	JSR GETLNZ
+}
+	;; JSR set_gr_mode
+
+
+	;; Activate 64k in read/write mode
+	LDA LC_RAM_SELECT
+	LDA LC_RAM_SELECT
+
+	+store_8 rs_sectors_to_read, 17
+	+store_8 target_track, 33
+	+store_8 target_sector, 15
+	+store_8 target_bank, >(disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR-16*256)
+	jsr read_sect
+
+
+	+store_16 pointer, disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR-16*256
+	jsr init_preload
+
 zgood:
 
 	;; +store_16 pop_path, datafile
@@ -266,7 +300,7 @@ zgood:
 	;; !word prodos_read_params	    ; $0E0C
 
 	JMP zorglub
-	JMP main_start
+	;; JMP main_start
 
 prodos_params:
 	!byte 3	; 3 parameters
@@ -384,75 +418,75 @@ scount1		!byte 0
 scount2		!byte 0
 
 
-main_start:
+;; main_start:
 
-	jsr set_hgr_mode
-	jsr clear_screen
-	jsr clear_hgr
+;; 	jsr set_hgr_mode
+;; 	jsr clear_screen
+;; 	jsr clear_hgr
 
-	lda #0
-	sta hgr_current_line
-	+store_16 stripe_ptr, hgr_strip
-	+setup_hgr_line_pointers
+;; 	lda #0
+;; 	sta hgr_current_line
+;; 	+store_16 stripe_ptr, hgr_strip
+;; 	+setup_hgr_line_pointers
 
-	LDA screen_pointer
-	ADC #30
-	STA screen_pointer
+;; 	LDA screen_pointer
+;; 	ADC #30
+;; 	STA screen_pointer
 
-	LDA #10+3
-	STA count3
+;; 	LDA #10+3
+;; 	STA count3
 
-.hgr_tile_loop1:
-	LDY count3
-	LDA (stripe_ptr),Y	; From tile number...
-	ASL
+;; .hgr_tile_loop1:
+;; 	LDY count3
+;; 	LDA (stripe_ptr),Y	; From tile number...
+;; 	ASL
 
-	LDA #$FF
-	JSR hgr_mono_tile_expander
-	;; JSR hgr_tile_expander
-
-
-	DEC count3
-	BNE .hgr_tile_loop1
-
-	JSR GETLNZ
-	JMP zorglub
+;; 	LDA #$FF
+;; 	JSR hgr_mono_tile_expander
+;; 	;; JSR hgr_tile_expander
 
 
+;; 	DEC count3
+;; 	BNE .hgr_tile_loop1
+
+;; 	JSR GETLNZ
+;; 	JMP zorglub
 
 
-;;  ---------------------------------------------------------------------
 
-	;;  Split stripe if necessary
 
-	lda current_offset 			; tiles to write
-	clc
-	adc stripe_len
+;; ;;  ---------------------------------------------------------------------
 
-	cmp hgr_line_end
-	bmi no_split
+;; 	;;  Split stripe if necessary
 
-	; current_ofs + stripe_len < hgr_line_end
+;; 	lda current_offset 			; tiles to write
+;; 	clc
+;; 	adc stripe_len
 
-	;; eor #$FF
-	;; clc
-	;; adc #$1
+;; 	cmp hgr_line_end
+;; 	bmi no_split
 
-	lda stripe_len
-	sta count1
-	lda #0
-	sta count2
+;; 	; current_ofs + stripe_len < hgr_line_end
 
-no_split:
-	lda hgr_line_end
-	sec
-	sbc current_offset
-	sta count1
+;; 	;; eor #$FF
+;; 	;; clc
+;; 	;; adc #$1
 
-	lda stripe_len
-	sec
-	sbc count1
-	sta count2
+;; 	lda stripe_len
+;; 	sta count1
+;; 	lda #0
+;; 	sta count2
+
+;; no_split:
+;; 	lda hgr_line_end
+;; 	sec
+;; 	sbc current_offset
+;; 	sta count1
+
+;; 	lda stripe_len
+;; 	sec
+;; 	sbc count1
+;; 	sta count2
 
 
 ;;  ---------------------------------------------------------------------
@@ -475,17 +509,6 @@ zorglub:
 ;; debug	!byte 0
 
 
-
-	LDA #(' '+$80)
-	JSR clear_screen
-	+writeln msg
-	LDA #('>' + $80)
-	STA GETLNZ_PROMPT
-!if DRIVE_SELECT = 0 {
-	JSR GETLNZ
-}
-	;; JSR set_gr_mode
-
 	lda #' '+$80
 	jsr clear_screen
 	jsr clear_hgr
@@ -493,7 +516,14 @@ zorglub:
 
 	;; LDA #0
 	;; JSR clear_screen
-	JSR init_disk_read
+	;; JSR init_disk_read
+
+	!if DRIVE_SELECT = $80 {
+	LDX #SLOT_SELECT
+	LDA DRV2_SLCT, X
+	}
+
+	LDA #SLOT_SELECT
 	JSR sector_zero
 
 
@@ -519,11 +549,9 @@ sectors_to_read	   !byte SECTORS_PER_TRACK
 
 
 main_control:
-	LDA LC_RAM_SELECT
-	LDA LC_RAM_SELECT
 
-	jsr preload_sectors
-	jsr copy_compressed
+	;; jsr preload_sectors
+	;; jsr copy_compressed
 
 
 .main_control_loop:
@@ -540,11 +568,12 @@ main_control:
 
 	; Decide what to do next
 
+PAUSE = 6
 	LDA sectors_passed
-	CMP #4	; Decrunching a picture takes up to 4 sectors "long". With this timeing, I reach roughly 3min 40s which is the time we look for.
+	CMP #PAUSE	; Decrunching a picture takes up to 4 sectors "long". With this timeing, I reach roughly 3min 40s which is the time we look for.
 	BMI .noframe
 	SEC
-	SBC #4
+	SBC #PAUSE
 	STA sectors_passed
 
 
@@ -700,18 +729,11 @@ change_track:
 
 	; Track advance and buffer swap
 
-	lda stay_on_first_track
-	cmp #1
-	beq keep_first_track
-
 	jsr advance_drive_latch
 	bcc track_advanced
 
 	SEC
 	RTS
-keep_first_track:
-	lda #0
-	sta stay_on_first_track
 
 track_advanced:
 
@@ -1570,7 +1592,7 @@ init_disk_read:
 
 	ldx #SLOT_SELECT
 !if DRIVE_SELECT = $80 {
-	LDA DRV_SLCT, X
+	LDA DRV2_SLCT, X
 }
 	LDA MOTOR_ON, X
 
@@ -1934,6 +1956,8 @@ pause_looop2:
 counter	!word end_compressed - compressed
 
 copy_compressed:
+	;;  Copy from the end to the beginning of buffer
+
 	+store_16 pointer, end_compressed - 1
 	+store_16 pointer2, disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR - 1 + 3 ; +3 extra bytes
 	ldy #0
@@ -1953,10 +1977,10 @@ copy_compressed:
 	cmp #0
 	bne .loop
 
-
 	+store_16 pointer, disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR - 1 + 3 - (end_compressed - compressed) + 1
 
 
+init_preload:
 	; Current track buffer to read sectors to
 	lda #0
 	sta track_buffer
@@ -2009,21 +2033,17 @@ preload_sectors:
 	RTS
 
 
+
+
 	!text "DATADATA"
 	*= $4000
-
-	!src "data.a"
-
-
-	;; !src "data.a"
-
 msg	!byte    $0D,$0D,$0D,$0D,$0D,$0D,$0D,$0D,$0D
    	!text    "----------------------------------------", $0D
    	!text    "BAD APPLE", $0D
 	!text    "                        WIZ / IMPHOBIA !", $0D
 	!text    $0D
 	!text    $0D
-	!text	  "GREETZ TO PL, SCORPIO, DARKNESS !", $0D
+	!text	 "GREETZ TO PL, SCORPIO, DARKNESS !", $0D
 	!text    $0D
 	!text    "THANKS TO ONSLAUGHT ON C64 FOR HAVING", $0D
 	!text    "PUT THE BAR SO HIGH :-)", $0D
@@ -2039,7 +2059,13 @@ msg	!byte    $0D,$0D,$0D,$0D,$0D,$0D,$0D,$0D,$0D
 	!text    "FLIP DISK AND HIT ENTER TO BEGIN...", $0D
         !byte    $00
 
+	!src "data.a"
+
+
+	;; !src "data.a"
+
+
 
 compressed:
-	!source "compressed.a"
+	;; !source "compressed.a"
 end_compressed:

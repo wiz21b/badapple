@@ -479,6 +479,9 @@ def simple_huffman( unique_stripes, all_stripes):
     with open("compressed.a","w") as fo:
         array_to_asm( fo, b[0:too_much + extra_bytes], '!byte')
 
+    with open("cstripes.data","bw") as fo:
+        fo.write( b)
+
     with open("cstripes.dsk","bw") as fo:
         fo.write( disk_2_dos( b[too_much:]))
 
