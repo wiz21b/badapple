@@ -462,28 +462,29 @@ def simple_huffman( unique_stripes, all_stripes):
     print("Bit stream simple huffman : {} stripes, {} bits, {} bytes".format( len( all_stripes), len( stream), len(b)))
 
 
-    # Allow some wrapping so that the ASM code is simpler
-    extra_bytes = 3
-
-
-    too_much = len(b) - DISK_SIZE
-
-    MAX = 1024
-
-    if too_much <= 0:
-        too_much = MAX
-
-    if too_much > MAX:
-        too_much = MAX
-
-    with open("compressed.a","w") as fo:
-        array_to_asm( fo, b[0:too_much + extra_bytes], '!byte')
-
     with open("cstripes.data","bw") as fo:
         fo.write( b)
 
-    with open("cstripes.dsk","bw") as fo:
-        fo.write( disk_2_dos( b[too_much:]))
+    # # Allow some wrapping so that the ASM code is simpler
+    # extra_bytes = 3
+
+
+    # too_much = len(b) - DISK_SIZE
+
+    # MAX = 4096
+
+    # if too_much <= 0:
+    #     too_much = MAX
+
+    # if too_much > MAX:
+    #     too_much = MAX
+
+    # with open("compressed.a","w") as fo:
+    #     array_to_asm( fo, b[0:too_much + extra_bytes], '!byte')
+
+
+    # with open("cstripes.dsk","bw") as fo:
+    #     fo.write( disk_2_dos( b[too_much:]))
 
 
     print("Some stripes:")

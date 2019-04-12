@@ -171,10 +171,10 @@ DRAW_STATUS = 1
 LZ	= 1
 NOCOMP	= 0
 compression = LZ		; LZ or NOCOMP
-TOTAL_FRAMES	= 2190		; Number of frames in the movie
+TOTAL_FRAMES	= 1971		; Number of frames in the movie
 TRANSPARENT_TILE	= $7E
-VERTICAL_TILES = 20
-HORIZONTAL_TILES = 24
+VERTICAL_TILES = 20		; equiv C64 = 20*8 = 160
+HORIZONTAL_TILES = 24		; equiv C64 = 24*8 = 192
 
 
 GETLNZ 		= $FD67
@@ -232,7 +232,7 @@ dummy_ptr		= 254
 
 ; Other constants
 
-disk_buffers_base	= $DE00	; you'll need 64kb RAM to do that (language card!)
+disk_buffers_base	= $DA00	; you'll need 64kb RAM to do that (language card!)
 
 ; Prodos stuff
 
@@ -249,14 +249,9 @@ buf              =        $44
 	*= $C00
 
 
-
-
-
-
-
-	+store_8 rs_sectors_to_read, 100
+	+store_8 rs_sectors_to_read, 89
 	+store_8 target_track, 27
-	+store_8 target_sector, 15
+	+store_8 target_sector, 5
 	+store_8 target_bank, $40
 	jsr read_sect
 
@@ -275,14 +270,18 @@ buf              =        $44
 	LDA LC_RAM_SELECT
 	LDA LC_RAM_SELECT
 
-	+store_8 rs_sectors_to_read, 17
-	+store_8 target_track, 33
-	+store_8 target_sector, 15
-	+store_8 target_bank, >(disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR-16*256)
+SECTORS_PRELOAD = 34
+	;; + 1 for the extra bytes which must be outside the buffer !!!
+BEGIN_PRELOAD_BUFFER = 	disk_buffers_base + (2*SECTORS_PER_TRACK-SECTORS_PRELOAD+1)*BYTES_PER_SECTOR
+
+	+store_8 rs_sectors_to_read, SECTORS_PRELOAD
+	+store_8 target_track, 32
+	+store_8 target_sector, 14
+	+store_8 target_bank, >BEGIN_PRELOAD_BUFFER
 	jsr read_sect
 
 
-	+store_16 pointer, disk_buffers_base+2*SECTORS_PER_TRACK*BYTES_PER_SECTOR-16*256
+	+store_16 pointer, BEGIN_PRELOAD_BUFFER
 	jsr init_preload
 
 zgood:
@@ -605,7 +604,6 @@ PAUSE = 6
 	bcs .main_control_loop
 
 .wait_processing:
-
 	jsr change_track_if_necessary
 
 .unexpected_sector:
@@ -701,15 +699,45 @@ read_any_sector:
 	RTS
 	}
 ; ----------------------------------------------------------------------------
+
+still_in_memory	!byte 1
+
+in_memory_process:
+	!zone {
+
+	lda pointer + 1
+	cmp #TRACK_DATA_BANK + SECTORS_PER_TRACK
+	bmi .not_yet
+
+	lda #0
+	sta still_in_memory
+
+	lda #0
+	sta track_buffer
+
+ 	lda #SECTORS_PER_TRACK
+ 	sta sectors_to_read
+
+	JSR clear_read_status
+
+.not_yet:
+	RTS
+	}
+
 change_track_if_necessary:
 
+	lda #0
+	cmp still_in_memory
+	bne in_memory_process
+
+.regular_process:
 	; Are all sectors read?
 
 	lda sectors_to_read
 	cmp #0
 	bne .no_track_change
 
-	; Are all other sectors processed ?
+	; Are all other sectors data processed ?
 
 	lda track_buffer
 	eor #SECTORS_PER_TRACK
@@ -737,7 +765,7 @@ change_track:
 
 track_advanced:
 
-	;;  Set pointer (attenion! we only reset the pointer when at the end of BOTH the buffers)
+	;;  Set pointer (attention! we only reset the pointer when at the end of BOTH the buffers)
 
 	lda #TRACK_DATA_BANK_OUT
 	cmp pointer + 1
@@ -814,11 +842,16 @@ clear_read_status:
 
 	!macro pixel {
 	CMP #1
-	BNE .not_read
-	LDA #'-' + $80
-	JMP .go_on
-.not_read:
+	BEQ .sector_read
+	CMP #2
+	BEQ .sector_preloaded
 	LDA #'.' + $80
+	JMP .go_on
+.sector_preloaded:
+	LDA #'!' + $80
+	JMP .go_on
+.sector_read:
+	LDA #'-' + $80
 .go_on:
 
 	}
@@ -877,12 +910,18 @@ hexband:
 	LDA pointer+1
 	SEC
 	SBC #TRACK_DATA_BANK
+	BCC .no_mem_draw
 
 	TAY
+
+
 	LDA #$0D		; M inverse
+	CLC
+	ADC still_in_memory
+
 	;; ORA STATUS_BUFFER2,Y
 	STA STATUS_BUFFER,Y
-
+.no_mem_draw:
 	;; Draw the disk head
 
 	lda sect
@@ -1986,11 +2025,12 @@ init_preload:
 	sta track_buffer
 
  	lda #SECTORS_PER_TRACK
+	lda #0
  	sta sectors_to_read
 
 	!zone {
 
-	lda #0			; sector is marked as read
+	lda #2			; sector is marked as read
 	ldy #0
 .loop:
 	sta track_status,y
@@ -2002,7 +2042,7 @@ init_preload:
 
 	!zone {
 
-	lda #1			; sector is marked as read
+	lda #2			; sector is marked as read
 .loop:
 	sta track_status,y
 	iny

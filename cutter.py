@@ -33,6 +33,7 @@ def fit_in_disk( a : bytearray):
     if len( a) < DISK_SIZE:
         # Pad with zeros
         a.extend( bytearray(  DISK_SIZE - len( a)))
+        assert len(a) == DISK_SIZE
         return a
     elif len( a) > DISK_SIZE:
         return a[0:DISK_SIZE]
@@ -90,14 +91,16 @@ with open('STARTUP','rb') as fi:
 
 
 with open("cstripes.data", "rb") as fi:
-    b = bytearray( fi.read(200000))
+    b = bytearray( fi.read())
 
     if len(b) > DISK_SIZE:
         print("Need additional RAM to fit stream data : {} bytes".format(len(b)-DISK_SIZE))
-        too_much = min( 4096, len(b)-DISK_SIZE)
+        too_much = min( 8192+2048+512, len(b)-DISK_SIZE)
+        too_much = len(b)-DISK_SIZE
 
         if too_much % 256:
             too_much = ((too_much // 256) + 1) * 256
+            print("Aligned 'too much' on {}".format(too_much))
 
         # Cut bytes at the beginning of the stream
 
