@@ -167,7 +167,7 @@
 	JSR println
 }
 
-DRAW_STATUS = 1
+DRAW_STATUS = 0
 LZ	= 1
 NOCOMP	= 0
 compression = LZ		; LZ or NOCOMP
@@ -359,7 +359,8 @@ hgr_strip:
 
 	CENTERING = (40 - HORIZONTAL_TILES) >> 1
 
-hgr_lines_offsets:
+hgr_lines_offsets = * + (( (192/8) - VERTICAL_TILES) / 2) * 2
+
 	!for i,8 {
 	!word HGR_RAM + (i-1)*$80 + CENTERING
 	}
@@ -1517,8 +1518,13 @@ donepln:
 
 ; ------------------------------------------------------------------------------
 set_hgr_mode:
-	; set GR mode, full screen
+				; set GR mode, full screen
+!if DRAW_STATUS = 1 {
 	LDA $C053		; mix text and gfx (c052 = full text/gfx)
+	} else {
+	LDA $C052		; mix text and gfx (c052 = full text/gfx)
+	}
+
 	LDA $C054
 	LDA $C057
 	LDA $C050 ; display graphics; last for cleaner mode change (according to Apple doc)
