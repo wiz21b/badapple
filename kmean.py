@@ -57,7 +57,7 @@ TILE_SIZE = 8 # square tiles of NxN pixels
 WIDTH = 24
 HEIGHT = 20
 
-IMG_FROM_TO = 00,10000
+IMG_FROM_TO = 00,200000
 
 COLORS = 2
 
@@ -116,6 +116,25 @@ def image_to_tiles( filename, tiles):
                 pic[y // TILE_SIZE, x // TILE_SIZE] = 1
 
     return a, pic
+
+def reverseBits(num,bitSize):
+
+     # convert number into binary representation
+     # output will be like bin(10) = '0b10101'
+     binary = bin(num)
+
+     # skip first two characters of binary
+     # representation string and reverse
+     # remaining string and then append zeros
+     # after it. binary[-1:1:-1]  --> start
+     # from last character and reverse it until
+     # second last character from left
+     reverse = binary[-1:1:-1]
+     reverse = reverse + (bitSize - len(reverse))*'0'
+
+     # converts reversed binary string into integer
+     return int(reverse,2)
+
 
 # 3:41 = 221 sec = 2210 pictures
 
@@ -281,23 +300,6 @@ print("{} stripes were built, {} are unique".format( len( all_stripes), len( uni
 simple_huffman( unique_stripes, all_stripes)
 
 
-def reverseBits(num,bitSize):
-
-     # convert number into binary representation
-     # output will be like bin(10) = '0b10101'
-     binary = bin(num)
-
-     # skip first two characters of binary
-     # representation string and reverse
-     # remaining string and then append zeros
-     # after it. binary[-1:1:-1]  --> start
-     # from last character and reverse it until
-     # second last character from left
-     reverse = binary[-1:1:-1]
-     reverse = reverse + (bitSize - len(reverse))*'0'
-
-     # converts reversed binary string into integer
-     return int(reverse,2)
 
 with open("data.a","w") as fo:
 
@@ -308,97 +310,3 @@ with open("data.a","w") as fo:
         fo.write("\t!byte " + ",".join( ["${:02x}".format( reverseBits( x, 8)) for x in reversed( np.packbits(t))]) + "\n")
 
     unique_stripes_to_asm( fo, unique_stripes)
-
-#stripes_to_disk( all_stripes)
-
-exit()
-
-COMPARE_PIC_NDX = len(pictures) // 4
-
-stdscr = curses.initscr()
-stdscr.nodelay(1)
-curses.cbreak()
-colors = [ ' '*2, '\u2591'*2,'\u2592'*2,'\u2588'*2, '\u2588'*2 ]
-
-def compress_file( bin_name, bdata):
-    bfile = open( bin_name,'bw')
-    bfile.write( bdata)
-    bfile.close()
-    os.system('lz4x.exe -9 -f {} {}'.format(bin_name, bin_name+'lz4'))
-    return os.path.getsize( bin_name+'lz4')
-
-
-to_lz4 = bytearray()
-total_on_disk = 0
-
-for COMPARE_PIC_NDX in range(1000):
-    #os.system('cls')
-
-    pat = pictures_as_tiles[COMPARE_PIC_NDX]
-    p = pictures[COMPARE_PIC_NDX]
-
-    # print(pat.shape)
-    for y in range( pat.shape[0]):
-        for x in range( pat.shape[1]):
-            n = int(pat[y,x])
-            pat[y,x] = labels[ n ]
-
-    # print( pat)
-
-    to_lz4.extend(bytearray( pat.astype(np.int16).flatten()))
-    if COMPARE_PIC_NDX % 32 == 0:
-        #total_on_disk += compress_file( 'test.bin', to_lz4)
-        to_lz4 = bytearray()
-
-
-    decompressed = np.zeros( (height, width), dtype=int )
-
-    for y in range( pat.shape[0]):
-        for x in range( pat.shape[1]):
-            c = centroids[ int(pat[y,x])].reshape( (4,4) )
-            decompressed[ y*4:(y+1)*4, x*4:(x+1)*4 ] = c
-
-
-    #decompressed = np.round_( decompressed)
-
-    for y in range(40):
-        l = ""
-        for x in range(width):
-            l += colors[decompressed[y,x]]
-
-        l += " | "
-        for x in range(width):
-            l += colors[int(p[y,x])]
-
-        l += " |"
-        print(l)
-
-        stdscr.addstr(y,1,l)
-
-    stdscr.addstr(1,1,"{} on disk => bytes per frame = {}".format(total_on_disk, int( total_on_disk / (1+COMPARE_PIC_NDX))))
-    stdscr.refresh()
-
-    # codebook_ram = TILE_SIZE*TILE_SIZE*CODEBOOK_SIZE
-    # print("Codebook size = {}".format( codebook_ram))
-    # tile_ram = 40*48/(TILE_SIZE*TILE_SIZE)
-    # print("Frame size = {}".format( tile_ram))
-    # print("Frame in memeory size = {}".format( (34000 - codebook_ram) // tile_ram ))
-
-
-    time.sleep(0.1)
-
-    c = stdscr.getch()
-    if c == ord('q'):
-        break
-
-
-curses.endwin()
-
-# codebook, distortion = vq.kmeans( tw, 100, iter=20, thresh=1e-12,)
-
-# print("Codebook: {}".format(codebook.shape[0]))
-# compressed_tiles, distortion  = vq.vq( tiles, codebook)
-
-# print( compressed_tiles)
-
-# print( pictures_as_tiles[0])

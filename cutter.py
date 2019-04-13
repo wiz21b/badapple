@@ -115,11 +115,11 @@ with open("cstripes.data", "rb") as fi:
 
     else:
         b_disk = b
-        b_mem = []
+        b_mem = bytearray()
 
     print("Writing BAD_APPLE_DATA.DSK")
     with open("BAD_APPLE_DATA.DSK","bw") as fo:
-        fo.write( reorder_disk( b_disk, DOS_ORDER))
+        fo.write( reorder_disk( fit_in_disk( b_disk), DOS_ORDER))
 
 
 if sys.argv[1] == 'disk':
