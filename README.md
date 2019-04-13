@@ -6,6 +6,8 @@ This demo is the classic Bad Apple demo.
 How to run
 ----------
 
+Download the [release](https://github.com/wiz21b/badapple/releases/download/1.0/BadApple.zip).
+
 Open `BAD_DATA.DSK` file in your favourite emulator (I tested Mame and AppleWin).
 It will run automatically. When requested to flip the disk, insert `BAD_APPLE_DATA.DSK` in the same drive.
 Hit enter, and enjoy !
