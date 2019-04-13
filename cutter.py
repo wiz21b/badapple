@@ -117,8 +117,8 @@ with open("cstripes.data", "rb") as fi:
         b_disk = b
         b_mem = []
 
-    print("Writing cstripes.dsk")
-    with open("cstripes.dsk","bw") as fo:
+    print("Writing BAD_APPLE_DATA.DSK")
+    with open("BAD_APPLE_DATA.DSK","bw") as fo:
         fo.write( reorder_disk( b_disk, DOS_ORDER))
 
 
@@ -144,6 +144,6 @@ if sys.argv[1] == 'disk':
 
         disk2 = reorder_disk( disk, DOS_ORDER)
 
-        print("Writing NEW2.DSK")
-        with open( 'NEW2.DSK','wb') as fo:
+        print("Writing BAD_APPLE.DSK")
+        with open( 'BAD_APPLE.DSK','wb') as fo:
             fo.write(disk2)

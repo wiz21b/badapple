@@ -186,11 +186,10 @@ HGR_RAM		= $2000
 MLI		= $BF00
 SPKR		= $C030
 MOTOR_ON	= $C089
-DRV_ENABLE	= $C08A		; Select drive 1
 DRV2_SLCT	= $C08B		; Select drive 2
 LC_RAM_SELECT	= $C08B
 
-DRIVE_SELECT	= $80	; 0 == drive 1; $80 = drive 2
+DRIVE_SELECT	= $0	; 0 == drive 1; $80 = drive 2
 SLOT_SELECT	= $60	; 0 (drive 1) 110 (slot 6) 0000
 PRODOS_MLI_READ	= $CA
 PRODOS_MLI_OPEN	= $C8
@@ -260,11 +259,6 @@ buf              =        $44
 	+writeln msg
 	LDA #('>' + $80)
 	STA GETLNZ_PROMPT
-!if DRIVE_SELECT = 0 {
-	JSR GETLNZ
-}
-	;; JSR set_gr_mode
-
 
 	;; Activate 64k in read/write mode
 	LDA LC_RAM_SELECT
@@ -284,6 +278,23 @@ BEGIN_PRELOAD_BUFFER = 	disk_buffers_base + (2*SECTORS_PER_TRACK-SECTORS_PRELOAD
 	+store_16 pointer, BEGIN_PRELOAD_BUFFER
 	jsr init_preload
 
+!if DRIVE_SELECT = 0 {
+kbd:
+	LDX #0
+print_flip_disk:
+	LDA flip_disk,X
+	CMP #0
+	BEQ done_print
+	STA $750, X
+	INX
+	JMP print_flip_disk
+done_print:
+	LDA $C000
+	CMP #0
+	BEQ kbd
+}
+
+
 zgood:
 
 	;; +store_16 pop_path, datafile
@@ -300,6 +311,9 @@ zgood:
 
 	JMP zorglub
 	;; JMP main_start
+flip_disk:
+	!byte $46,$4C,$49,$50,$60,$44,$49,$53,$4B,$60,$41,$4E,$44,$60,$48,$49,$54,$60,$41,$60,$4B,$45,$59
+	!byte 0
 
 prodos_params:
 	!byte 3	; 3 parameters
@@ -568,7 +582,7 @@ main_control:
 
 	; Decide what to do next
 
-PAUSE = 6
+PAUSE = 4			; ok for applewin
 	LDA sectors_passed
 	CMP #PAUSE	; Decrunching a picture takes up to 4 sectors "long". With this timeing, I reach roughly 3min 40s which is the time we look for.
 	BMI .noframe
@@ -969,7 +983,7 @@ process_a_frame:
 	and #1
 	bne process_a_frame_loop
 
-	jsr sound
+	;; jsr sound
 
 process_a_frame_loop2:
 	JSR load_current_stripe
@@ -2102,7 +2116,7 @@ msg	!byte    $0D,$0D,$0D,$0D,$0D,$0D,$0D,$0D,$0D
 	!text	 "(C) 2019 S. CHAMPAILLER", $0D
 	!text    $0D
    	!text    "----------------------------------------", $0D
-	!text    "FLIP DISK AND HIT ENTER TO BEGIN...", $0D
+	!text    "LOADING...", $0D
         !byte    $00
 
 	!src "data.a"

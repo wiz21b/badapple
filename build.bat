@@ -14,5 +14,5 @@ REM java -jar AppleCommander-1.3.5.13-ac.jar -p NEW.DSK BADATA BIN 0x4000 < BADA
 python cutter.py disk
 
 REM -speed 40
-REM c:\port-stc\opt\mame\mame64 apple2p -skip_gameinfo -window -nomax -flop1 NEW.DSK -flop2 cstripes.dsk -rp bios
-\PORT-STC\opt\applewin\Applewin.exe -d1 NEW2.DSK -d2 cstripes.dsk
+REM c:\port-stc\opt\mame\mame64 apple2p -skip_gameinfo -window -nomax -flop1 BAD_APPLE.DSK -flop2 BAD_APPLE_DATA.DSK -rp bios
+\PORT-STC\opt\applewin\Applewin.exe -d1 BAD_APPLE.DSK -d2 BAD_APPLE_DATA.DSK
