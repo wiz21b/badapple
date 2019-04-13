@@ -29,9 +29,10 @@ def s(p):
 d("data.a.best")
 d("cstripes.data.best")
 
-for i in range(100):
+NB_TRIALS = 200
+for i in range(NB_TRIALS):
     subprocess.run("python kmean.py")
-    print("-"*80 + " Run {}".format(i))
+    print("-"*80 + " Run {}/{}".format(i, NB_TRIALS))
     if s("cstripes.data") < (s("cstripes.data.best") or 100000000):
         print("Best shot {}".format(s("cstripes.data")))
         shutil.copyfile("data.a", "data.a.best")

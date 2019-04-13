@@ -248,9 +248,9 @@ buf              =        $44
 	*= $C00
 
 
-	+store_8 rs_sectors_to_read, 92
-	+store_8 target_track, 26
-	+store_8 target_sector, 12
+	+store_8 rs_sectors_to_read, 93
+	+store_8 target_track, 27
+	+store_8 target_sector, 0
 	+store_8 target_bank, $40
 	jsr read_sect
 
@@ -264,13 +264,13 @@ buf              =        $44
 	LDA LC_RAM_SELECT
 	LDA LC_RAM_SELECT
 
-SECTORS_PRELOAD = 40
+SECTORS_PRELOAD = 35
 	;; + 1 for the extra bytes which must be outside the buffer !!!
 BEGIN_PRELOAD_BUFFER = 	disk_buffers_base + (2*SECTORS_PER_TRACK-SECTORS_PRELOAD+1)*BYTES_PER_SECTOR
 
 	+store_8 rs_sectors_to_read, SECTORS_PRELOAD
 	+store_8 target_track, 32
-	+store_8 target_sector, 8
+	+store_8 target_sector, 13
 	+store_8 target_bank, >BEGIN_PRELOAD_BUFFER
 	jsr read_sect
 

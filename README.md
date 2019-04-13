@@ -3,6 +3,18 @@ Bad Apple Demo
 
 This demo is the classic Bad Apple demo.
 
+How to run
+----------
+
+Open `BAD_DATA.DSK` file in your favourite emulator (I tested Mame and AppleWin).
+It will run automatically. When requested to flip the disk, insert `BAD_APPLE_DATA.DSK` in the same drive.
+Hit enter, and enjoy !
+
+
+Background information
+----------------------
+
+
 I decided to do it after watching the demo from Onslaught on C64. It
 sounded sad to me that the Apple didn't run the Bad Apple :-)
 
