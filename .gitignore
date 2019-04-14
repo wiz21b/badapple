@@ -1,0 +1,5 @@
+.viminfo
+.idea
+*~
+**/__pycache__
+*.bak

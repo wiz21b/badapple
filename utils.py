@@ -393,9 +393,9 @@ def stats_unique_stipes( unique_stripes):
     f2 = [s for s in filter( lambda s:s.frequency == 2, sorted( unique_stripes, key=lambda s:s.frequency)) ]
     print( "{} frequency-2 stripes, totalling {} bytes".format( len(f2), sum( [ len(s.data) for s in f2 ])))
 
-    with open("stats.csv","w") as fo:
-        for s in sorted( unique_stripes, key=lambda s:s.frequency * 100000 + len(s.compressed)):
-            fo.write("{};{};{};{};\"{}\"\n".format( s.frequency, len(s.compressed), len(s.data), s.has_no_count(), (hex_byte(s.data))))
+    # with open("stats.csv","w") as fo:
+    #     for s in sorted( unique_stripes, key=lambda s:s.frequency * 100000 + len(s.compressed)):
+    #         fo.write("{};{};{};{};\"{}\"\n".format( s.frequency, len(s.compressed), len(s.data), s.has_no_count(), (hex_byte(s.data))))
 
 def simple_huffman( unique_stripes, all_stripes):
     sid = 1

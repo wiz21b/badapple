@@ -33,6 +33,7 @@ unchanged avg:81.73848934550979, stddev:9.162873654288592
 
 
 """
+import tempfile
 import time
 import os
 import glob
@@ -57,7 +58,7 @@ TILE_SIZE = 8 # square tiles of NxN pixels
 WIDTH = 24
 HEIGHT = 20
 
-IMG_FROM_TO = 00,200000
+IMG_FROM_TO = 00,20000
 
 COLORS = 2
 
@@ -283,7 +284,7 @@ for p_ndx in range( len( pictures)):
     img.close()
 
 print("Tiled stream length is {}".format( len(tiled_stream)))
-ffmpeg(r"-y -framerate 10 -i {}/zulu%05d.png video.avi".format(IMG_PREFIX))
+ffmpeg(r"-y -framerate 10 -i {}/zulu%05d.png {}/video.avi".format(IMG_PREFIX, tempfile.gettempdir()))
 
 # for t in range( 0, len(tiled_stream), WIDTH*HEIGHT):
 #     print( tiled_stream[t:t+WIDTH*HEIGHT])
