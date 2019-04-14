@@ -14,8 +14,8 @@ REM java -jar AppleCommander-1.3.5.13-ac.jar -p NEW.DSK BADATA BIN 0x4000 < BADA
 python cutter.py disk
 
 REM Making a release
-del bad_apple.zip
-7z a -tzip bad_apple.zip BAD_APPLE.DSK BAD_APPLE_DATA.DSK
+del BadApple.zip
+7z a -tzip BadApple.zip BAD_APPLE.DSK BAD_APPLE_DATA.DSK
 
 REM -speed 40
 REM c:\port-stc\opt\mame\mame64 apple2p -skip_gameinfo -window -nomax -flop1 BAD_APPLE.DSK -flop2 BAD_APPLE_DATA.DSK -rp bios
