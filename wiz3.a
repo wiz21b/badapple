@@ -247,10 +247,11 @@ buf              =        $44
 
 	*= $C00
 
+	; 83*256 = 21248 / 0xC000 - 0x4000 = 36864
 
-	+store_8 rs_sectors_to_read, 93
+	+store_8 rs_sectors_to_read, 83
 	+store_8 target_track, 27
-	+store_8 target_sector, 0
+	+store_8 target_sector, 13
 	+store_8 target_bank, $40
 	jsr read_sect
 
@@ -264,13 +265,13 @@ buf              =        $44
 	LDA LC_RAM_SELECT
 	LDA LC_RAM_SELECT
 
-SECTORS_PRELOAD = 35
+SECTORS_PRELOAD = 32
 	;; + 1 for the extra bytes which must be outside the buffer !!!
 BEGIN_PRELOAD_BUFFER = 	disk_buffers_base + (2*SECTORS_PER_TRACK-SECTORS_PRELOAD+1)*BYTES_PER_SECTOR
 
 	+store_8 rs_sectors_to_read, SECTORS_PRELOAD
-	+store_8 target_track, 32
-	+store_8 target_sector, 13
+	+store_8 target_track, 33
+	+store_8 target_sector, 0
 	+store_8 target_bank, >BEGIN_PRELOAD_BUFFER
 	jsr read_sect
 
@@ -279,19 +280,22 @@ BEGIN_PRELOAD_BUFFER = 	disk_buffers_base + (2*SECTORS_PER_TRACK-SECTORS_PRELOAD
 	jsr init_preload
 
 !if DRIVE_SELECT = 0 {
-kbd:
+
 	LDX #0
 print_flip_disk:
 	LDA flip_disk,X
 	CMP #0
-	BEQ done_print
+	BEQ wait_kbd
 	STA $750, X
 	INX
 	JMP print_flip_disk
-done_print:
+
+wait_kbd:
+ 	STA $C010
+wait_kbd_loop:
 	LDA $C000
-	CMP #0
-	BEQ kbd
+ 	BPL wait_kbd_loop
+ 	STA $C010
 }
 
 
