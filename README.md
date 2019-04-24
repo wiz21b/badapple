@@ -42,8 +42,8 @@ it more time, I think I could improve some more the screen size of the
 video. For exampme, I have the impression that using 16x16 tiles might
 be more efficient.
 
-*If you ever have the opportunity to run it on real Apple, please send
-me a video. That would be a very much apprciated gift.*
+~~If you ever have the opportunity to run it on real Apple, please send
+me a video. That would be a very much apprciated gift.~~ It works on real hardware !
 
 For those old enough and in the specific niche, I used to be called
 The Wizard of the Imphobia group. By that time it was customary
