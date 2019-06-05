@@ -29,13 +29,17 @@ For those interested, my code is here, "as is".
 If you're really interested, look at the kmean.py file.  That's the
 compressor. This is what it does:
 
-1. drop some frames in the original video
-2. compute the delta between each frame
-3. cut each frame in 8x8 tiles
-4. reduce the set of tiles using k-means approach
-5. use a form of RLE encoding to compress each run of tiled frame (this gives "stripes")
-6. the uses a Huffman style dictionary to compress each stripe
-7. store the data on the disk
+1. drop some frames in the original video (chosen wisely)
+2. compute the delta between each frame, let's call that d-frames
+3. cut each d-frame in 8x8 tiles
+4. reduce the set of all tiles of all d-frames using k-means approach
+5. use a form of RLE encoding to compress each run of tiles in d-frame (this gives "stripes")
+6. use a Huffman style dictionary to compress each stripe (Huffman is not practical on 
+   low performance machines, so I had to make an "approximation" to reach a better
+   speed/compression balance.
+7. store the data on the disk (regular Prodos sectors, not a file)
+
+Steps 4 and 6 are clearly the more sophisticated ones.
 
 The code is not super optimized and neither is the compressor.  Giving
 it more time, I think I could improve some more the screen size of the
