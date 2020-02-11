@@ -1,7 +1,7 @@
 Bad Apple Demo
 --------------
 
-This demo is the classic Bad Apple demo or "how to fit a 3min video on a CPU absolutely not made for that". [YouTube](https://www.youtube.com/watch?v=IiSFeqedcho)
+This demo is the classic Bad Apple demo or "how to fit a 3min video on a CPU absolutely not made for that". Watch it on [YouTube](https://www.youtube.com/watch?v=IiSFeqedcho)
 
 How to run
 ----------
