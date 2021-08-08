@@ -33,7 +33,7 @@ compressor. This is what it does:
 1. drop some frames in the original video (chosen wisely)
 2. compute the delta between each frame, let's call that d-frames
 3. cut each d-frame in tiles of 8x8 pixels
-4. reduce the set of all tiles of all d-frames using k-means approach (basic Lloyd algorithm + euclidean distance)
+4. reduce the set of all tiles of all d-frames using k-means approach (basic Lloyd algorithm + euclidean distance; now that I think about it, euclidean distance may be replaced with IoU distance, could be better)
 5. use a form of RLE encoding to compress each run of tiles in d-frame (this gives "stripes")
 6. use a Huffman style dictionary to compress each stripe. Huffman is not practical on 
    low performance machines, so I had to make an "approximation" to reach a better
